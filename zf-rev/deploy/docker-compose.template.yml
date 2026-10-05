@@ -1,0 +1,221 @@
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: zfc-postgres
+    environment:
+      POSTGRES_DB: zfc
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: zfc-redis
+    command: redis-server --requirepass ${REDIS_PASSWORD}
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  tdengine:
+    image: tdengine/tdengine:3.0.7.1
+    container_name: zfc-tdengine
+    environment:
+      TAOS_FQDN: tdengine
+    volumes:
+      - tdengine_data:/var/lib/taos
+      - tdengine_log:/var/log/taos
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "taos -u root -p'${TDENGINE_ROOT_PASSWORD}' -s 'show databases;' || taos -s 'show databases;'"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+
+  rrd-service:
+    image: ${RRD_SERVICE_IMAGE}
+    container_name: zfc-rrd-service
+    environment:
+      RUST_LOG: info
+    volumes:
+      - rrd_data:/data/rrd
+    restart: unless-stopped
+    depends_on:
+      - postgres
+      - redis
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8082/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  zf-controler:
+    image: ${ZF_CONTROLER_IMAGE}
+    container_name: zfc-controler
+    environment:
+      DB_PATH: postgresql://postgres:${POSTGRES_PASSWORD}@postgres:5432/zfc?schema=public
+      REDIS_PATH: redis://:${REDIS_PASSWORD}@redis:6379
+      MGMT_ARRANGER_PRIV_KEY: ${MGMT_ARRANGER_PRIV_KEY}
+      # zf-web 公钥:配置后管理面请求强制 ECDSA 时间戳验签(C4)。全新安装注入;
+      # 存量 docker-compose.yml 若无此项则控制器沿用老的公钥比对,升级不受影响。
+      WEB_PUBKEY: ${WEB_PUBKEY}
+      ARRANGER_HOSTS_URL: https://${CONTROLER_DOMAIN}
+      ZFC_INSTANCE_ID: ${ZFC_INSTANCE_ID}
+      ZFC_API_KEY: ${ZFC_API_KEY}
+      TDENGINE_URL: taos+ws://root:${TDENGINE_ROOT_PASSWORD}@tdengine:6041/zfc
+      DISABLE_TDENGINE: ${DISABLE_TDENGINE:-false}
+      RRD_SERVICE_URL: http://rrd-service:8082
+      RUST_LOG: info
+    ports:
+      - "3100:3100"
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      tdengine:
+        condition: service_healthy
+      rrd-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3100"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  zf-web:
+    image: ${ZF_WEB_IMAGE}
+    container_name: zfc-web
+    environment:
+      DB_PATH: postgresql://postgres:${POSTGRES_PASSWORD}@postgres:5432/zfc?schema=public
+      REDIS_PATH: redis://:${REDIS_PASSWORD}@redis:6379
+      JWT_SECRET: ${JWT_SECRET}
+      HOST_URL: https://${WEB_DOMAIN}
+      MGMT_URL: https://${CONTROLER_DOMAIN}
+      MGMT_URL_INNER: http://zf-controler:3100
+      MGMT_PUBKEY: ${MGMT_PUBKEY}
+      WEB_PRIV_KEY: ${WEB_PRIV_KEY}
+      WEB_PUBKEY: ${WEB_PUBKEY}
+      TDENGINE_DB: zfc
+      TDENGINE_URL: taos+ws://root:${TDENGINE_ROOT_PASSWORD}@tdengine:6041/zfc
+      DISABLE_TDENGINE: ${DISABLE_TDENGINE:-false}
+      RUST_LOG: info
+      APP_DOWNLOAD_DIR: /app/downloads
+    volumes:
+      - zf_web_downloads:/app/downloads
+    ports:
+      - "8080:3030"
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      tdengine:
+        condition: service_healthy
+      zf-controler:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3030/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: zfc-caddy
+    environment:
+      CADDY_EMAIL: ${CADDY_EMAIL}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    ports:
+      - "80:80"
+      - "443:443"
+    restart: unless-stopped
+    depends_on:
+      zf-web:
+        condition: service_healthy
+      zf-controler:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "caddy", "validate", "--config", "/etc/caddy/Caddyfile"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # =============================================================================
+  # TEMPORARY INITIALIZATION SERVICE (Run once then remove)
+  # =============================================================================
+  # This service is only needed for initial TDengine password setup.
+  # After running once, you can remove it from docker-compose.yml to avoid
+  # unnecessary delays during container startup.
+  #
+  # To use:
+  # 1. docker-compose up -d postgres redis tdengine
+  # 2. docker-compose up tdengine-init
+  # 3. Remove this service from docker-compose.yml
+  # =============================================================================
+  tdengine-init:
+    image: tdengine/tdengine:3.0.7.1
+    container_name: zfc-tdengine-init
+    profiles:
+      - init
+    environment:
+      TDENGINE_ROOT_PASSWORD: ${TDENGINE_ROOT_PASSWORD}
+    entrypoint: []
+    command: 
+      - sh
+      - -c
+      - |
+        echo 'Waiting for TDengine to start...'
+        sleep 20
+        echo 'Checking if password already changed...'
+        if taos -h tdengine -u root -p"$$TDENGINE_ROOT_PASSWORD" -s 'show databases;' > /dev/null 2>&1; then
+          echo 'Password already set, skipping initialization'
+          exit 0
+        fi
+        echo 'Setting TDengine root password...'
+        taos -h tdengine -u root -ptaosdata -s "alter user root pass '$$TDENGINE_ROOT_PASSWORD';"
+        if [ $$? -eq 0 ]; then
+          echo 'Password set successfully'
+          taos -h tdengine -u root -p"$$TDENGINE_ROOT_PASSWORD" -s 'show databases;'
+          if [ $$? -eq 0 ]; then
+            echo 'Password verification successful'
+          else
+            echo 'Password verification failed'
+            exit 1
+          fi
+        else
+          echo 'Password setting failed'
+          exit 1
+        fi
+    restart: "no"
+
+volumes:
+  postgres_data:
+  redis_data:
+  tdengine_data:
+  tdengine_log:
+  rrd_data:
+  caddy_data:
+  caddy_config:
+  zf_web_downloads:

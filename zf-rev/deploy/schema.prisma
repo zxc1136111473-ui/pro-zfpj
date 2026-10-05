@@ -1,0 +1,3307 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  // Corresponds to the cargo alias created earlier
+  provider = "cargo prisma"
+  // The location to generate the client. Is relative to the position of the schema
+  output   = "../zfc-prisma/src/prisma.generated.rs"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+  // directUrl = env("DIRECT_URL")
+}
+
+model Subscription {
+  id                  Int               @id @default(autoincrement())
+  tokenId             String            @unique
+  username            String?           @unique
+  passwordHash        String?
+  ownerAddress        String
+  tgUser              String?
+  tgChatId            String?
+  email               String?           @unique  // 用户邮箱（已验证），用于邮件通知；nullable @unique 允许多个 NULL
+  emailVerified       Boolean           @default(false)
+  billingType         Int               // 0=Cycle, 1=OneTime, 2=NoSubscription
+  basePrice           Int
+  recurringPrice      Int
+  recurringPriceMode  Int?                           // null/0=与初始相同, 1=固定, 2=相对
+  recurringPriceRate  Float?                         // 续费折扣比例，仅 mode=2 时使用
+  bandwidth           Int?
+  upBandwidth         Int?              // User-specific upload bandwidth limit in Mbps
+  downBandwidth       Int?              // User-specific download bandwidth limit in Mbps
+  bwLimitType         BwLimitType?      // BandWidht Limit type TotalUpAndDown(using bandwidth) or StandaloneUpAndDown(using upBandwidth and downBandwidth)
+  dynamicBw           String?           // DynamicBw it's a json
+  traffic             BigInt
+  usedTrafficLow      BigInt?
+  usedTrafficHigh     BigInt?
+  validUntil          DateTime
+  resetDays           Int?
+  lastReset           DateTime?
+  activated           Boolean
+  maxPortNumPerServer Int
+  totalMaxPorts       Int?              // 所有线路合计端口数上限（可选）; null/<=0 = 不限制
+  maxForwardEndpointNum Int             @default(5)
+  lines               Int[]
+  allowForwardEndpoint        Boolean           @default(false)
+  note                String            @default("")
+  ports               Port[]
+  allowIpNum          Int?
+  allowConnNum        Int?
+  packageId           Int?              // 关联的套餐ID
+  package             Package?          @relation(fields: [packageId], references: [id])
+  createdAt           DateTime          @default(now())
+  updatedAt           DateTime          @updatedAt
+  ForwardEndpoint     ForwardEndpoint[]
+  isAdmin             Boolean           @default(false)
+  lineUsages          SubscriptionLineUsage[]
+  createdLatencyConfigs LatencyTestConfig[]
+  createdForwarderLatencyConfigs ForwarderLatencyTestConfig[] @relation("ForwarderLatencyCreator")
+  tickets             Ticket[]
+  ticketMessages      TicketMessage[]
+  orders              Order[]
+  balance             Int               @default(0) // 用户余额，单位为分
+  autoRenewal         Boolean           @default(true)   // 到期自动续费开关
+  autoRenewalTryCnt   Int?              @default(0)       // 续费失败计数（仅诊断/展示，不再做永久闩锁）
+  autoTrafficTopup    Boolean           @default(false)   // 流量用完自动买流量包（独立于到期续费）
+  bonusTrafficBytes   BigInt            @default(0)       // 当期补充流量额度（字节），上限=traffic*1GB+bonus；重置时清零
+  topupCountThisPeriod Int              @default(0)       // 当期已自动补流量次数（防刷爆，重置时清零）
+  // 非空 = 已提交变更并调度了异步清零，尚未落地（auto-renewal-overdue-grace 守卫 A）
+  resetPendingSince   DateTime?
+  cycleDays           Int?
+  alerts              Alert[]
+  redeemCodes         RedeemCode[]      // 关联的兑换码
+  invitationCodeUsages InvitationCodeUsage[] // 关联的邀请码使用记录
+  trafficMatchRules    TrafficMatchRule[]    @relation("TrafficMatchRuleOwner")
+  trafficOutboundSelectors TrafficOutboundSelector[] @relation("TrafficOutboundSelectorOwner")
+  trafficRules         TrafficRule[]         @relation("TrafficRuleOwner")
+  trafficRuleSets      TrafficRuleSet[]      @relation("TrafficRuleSetOwner")
+  firewallRules        FirewallRule[]        @relation("FirewallRuleOwner")
+  firewallRuleSets     FirewallRuleSet[]     @relation("FirewallRuleSetOwner")
+  allowServerMonitoring Boolean?              // null=跟随套餐/系统设置, true=允许, false=禁止
+  allowInboundProxy   Boolean?              // null=不限制(跟随服务器), true=允许, false=禁止
+  // 入站代理协议「变体级」白名单（订阅级 entitlement）。空=不限制；含 kind 键(如 "vless")或
+  // variant 键(如 "vless-enc"/"vless-plain")。与 server/组/共享的 capability 取 AND（仅自定义订阅生效，
+  // 套餐订阅只看 package/packageLine，镜像 allowInboundProxy 的 coarse 语义）。
+  allowedInboundProtocols String[]          @default([])
+  periodUnit          Int?                           // 0=DAY, 1=MONTH, 2=QUARTER(3months), 3=YEAR; null=legacy fallback to cycleDays
+  periodCount         Int?                           // 周期数值（天数或月数等）; null=legacy fallback
+  anchorDay           Int?                           // 锚点日（1-31），自然月时用于月末恢复
+  trafficResetDays    Int?                           // 独立的流量重置天数，null=跟随订阅周期
+  // 推广返利相关
+  referralCode        String?           @unique       // 8字符推广码（注册或首次访问时懒生成）
+  referralBalance     Int               @default(0)   // 推广钱包余额（分），独立于 balance
+  referredById        Int?                            // 推荐人的 subscription.id
+  registrationIp      String?                         // 注册时 IP（反作弊用）
+  commissionComponentId Int?                          // 推广成分外键，null=使用系统默认
+  commissionComponent   ReferralCommissionComponent? @relation("SubscriptionCommissionComponent", fields: [commissionComponentId], references: [id], onDelete: SetNull)
+  referrals           ReferralRelationship[] @relation("Referrer")
+  referredRelation    ReferralRelationship?  @relation("Referred")
+  referralCommissionsEarned  ReferralCommission[] @relation("CommissionEarner")
+  referralTransactions       ReferralTransaction[]
+  referralWithdrawals        ReferralWithdrawal[]
+  withdrawalAccounts         WithdrawalAccount[]
+  // 订阅链接（自动生成多平台订阅）额度/开关/拉取安全策略；全部 null=继承(package/system)
+  subLinkEnabled             Boolean?       // 功能开关（null=继承 package/system）
+  maxSubTemplates            Int?           // 最大模板数（null=继承）
+  maxSubLinks                Int?           // 最大订阅链接数（null=继承；系统默认 1）
+  subFetchFirewallRuleSetId  Int?           // 管理员指派的拉取防火墙规则集（CIDR/ASN），用户不可改
+  subFetchFirewallRuleSet    FirewallRuleSet? @relation("SubFetchFirewall", fields: [subFetchFirewallRuleSetId], references: [id], onDelete: SetNull)
+  subFetchUaPolicyJson       String?        // typed-JSON: SubFetchUaPolicy，管理员专属
+  subFetchMinIntervalSecs    Int?           // 生产拉取最小间隔秒数（null=继承系统；0=不限流）
+  // 端口入站防火墙策略 override；null=继承套餐（运行期动态读 Package，非购买快照）
+  defaultInboundFirewallRuleSetId Int?
+  defaultInboundFirewallRuleSet   FirewallRuleSet? @relation("SubscriptionDefaultInboundFirewall", fields: [defaultInboundFirewallRuleSetId], references: [id], onDelete: SetNull)
+  inboundFirewallRequired         Boolean?       // null=继承套餐；true=强制选规则集
+  subscriptionTemplates      SubscriptionTemplate[] @relation("SubTemplateOwner")
+  subscriptionLinks          SubscriptionLink[]
+  subLinkFetchLogs           SubLinkFetchLog[]
+  kickedIps                  KickedIp[]
+  adminRoleAssignments       AdminRoleAssignment[]
+  userSessions               UserSession[]
+  // 多租户：所属租户（null=平台）。创建后不可变；isTenantAdmin 仅在"创建租户"事务里置 true（一租户一管理账号）
+  tenantId                   Int?
+  tenant                     Tenant?  @relation(fields: [tenantId], references: [id])
+  isTenantAdmin              Boolean  @default(false)
+  @@index([tenantId])
+  @@index([subFetchFirewallRuleSetId])
+  @@index([defaultInboundFirewallRuleSetId])
+  @@index([tokenId])
+  @@index([username])
+  @@index([ownerAddress])
+  @@index([billingType])
+  @@index([tokenId, ownerAddress])
+  @@index([bandwidth])
+  @@index([validUntil(sort: Desc)])
+  @@index([packageId])
+  @@index([referralCode])
+  @@index([referredById])
+  @@index([commissionComponentId])
+  // 自动补流量轮询候选扫描：把 `剩余≤1GB` 算式过滤限定在开启 topup 的子集上。
+  @@index([autoTrafficTopup, activated, billingType])
+}
+
+// ========== 面板登录会话（login-session-mgmt）==========
+// id = UUID v4 = JWT sid；关联 Subscription.id（不可变），不挂 tokenId（可轮换）。
+model UserSession {
+  id             String    @id
+  subscriptionId Int
+  subscription   Subscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+  createdAt      DateTime  @default(now())
+  expiresAt      DateTime
+  lastActiveAt   DateTime  @default(now())
+  ip             String
+  userAgent      String    @default("")
+  loginMethod    String    @default("password") // password | token
+  revokedAt      DateTime?
+  revokedBy      String?   // actor token_id
+  revokeReason   String?   // user_self | user_others | admin | token_rotation | password_change
+
+  @@index([subscriptionId, revokedAt])
+  @@index([subscriptionId, createdAt])
+  @@index([expiresAt])
+}
+
+// model OutboundEndpointGroup {
+//   id               Int                @id @default(autoincrement())
+//   name             String             @unique
+//   displayName      String
+//   hidden           String
+//   OutboundEndpoint OutboundEndpoint[]
+
+//   @@index([name])
+//   @@index([hidden])
+// }
+
+model OutboundEndpoint {
+  id           Int      @id @default(autoincrement())
+  name         String   @unique
+  pubkey       String   @unique
+  displayName  String
+  hidden       Boolean  @default(true)
+  ingressIpv4  String
+  portStart    Int?
+  portEnd      Int?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  ports        Port[]
+  trafficScale Float?
+  allowForward Boolean? @default(true)
+  allowLatencyTest Boolean? @default(false)
+  allowIpNum          Int?
+  allowConnNum        Int?
+  privateKey String?
+  interfaceName String?
+  version String?
+  proxyConfig String?
+  relatedForwardEndpointIds Int[]
+  /// JSON of `Vec<ForwardEndpointPolicy>` (weight/tier per related id). NULL = no policy.
+  forwardEndpointPolicies String?
+  balanceStrategy   Int?
+  allowIpV6      Boolean       @default(false)
+  useForwardAsTun Boolean? @default(false)
+  protocolFilters String[]     @default([])
+  ipVersionPriority String?     @default("default")
+  relatedTotServerIds Int[]
+  totServerTestMethod Int?
+  totServerSelectMode Int?
+  totSendMode         Int?
+  forwardMode         String?   // direct | relay | chain | tot; NULL = derive from legacy columns (对齐 Port.forwardMode)
+  totSubStreams       String?   // TOT 高级子流(链式/多端点优选) JSON of Vec<TotSubStreamSpec>; NULL = 回退扁平 relatedTotServerIds
+  forwardChainIds Int[] @default([])
+  forwardChainTestMethod Int? @default(0)
+  forwardChainSmartSelect Boolean? @default(true)
+  forwardChainFixedHopsNum  Int?
+  forwardChainFixedLastHopsNum Int?
+  latencyTestConfigs LatencyTestConfig[]
+  customConfig String?
+  tags         String[]     @default([])
+  bandwidth                 Int?              // Server-specific bandwidth limit in Mbps
+  upBandwidth               Int?              // Server-specific upload bandwidth limit in Mbps
+  downBandwidth             Int?              // Server-specific download bandwidth limit in Mbps
+  bwLimitType               BwLimitType?           // BandWidht Limit type TotalUpAndDown(using bandwidth) or StandaloneUpAndDown(using upBandwidth and downBandwidth)
+  serverGroupId             Int?              // 所属服务器组ID
+  serverGroup               ServerGroup?      @relation(fields: [serverGroupId], references: [id])
+  isGroup                   Boolean?          // 是否这个服务器是一个组
+  autoAdd                   Boolean           @default(false) // 是否自动添加的服务器
+  forceUsingFwd             Boolean           @default(false) // 强制必须使用转发端点，禁止直连, 开启allowForward的情况下才生效
+  enableFwdChainMode        Boolean           @default(true)  // 允许使用转发链模式, 开启allowForward的情况下才生效
+  UdpSISO                   Boolean           @default(false) // UDP原进原出
+  allowInboundProxy         Boolean           @default(false) // 允许inbound代理
+  allowedInboundProtocols   String[]     @default([]) // 入站协议白名单(mode=Override时生效)；空=放开全部7种
+  inboundProtocolPolicyMode Int          @default(0)  // 0=Inherit(随组), 1=Override(用本机allowedInboundProtocols)
+  forceInboundProxy         Boolean?                  // 强制入站代理：null=随组, true/false=覆盖
+  extraInboundAddress       String[]     @default([]) // 额外入口IP地址列表
+  enableRemoteShell         Boolean      @default(false)
+
+  // 跨面板服务器共享（shared-server-cross-panel-design §4）
+  // A 侧：true = 共享出去的影子服务器行——不出现在常规服务器列表/监控/选路，
+  // 禁止建端口（INV-2）；owner 连接接受/版本/统计/设备计数 key 在此行上。
+  isSharedOutServer    Boolean @default(false)
+  // B 侧：true = 从其他面板导入的共享服务器；privateKey 为空占位（B 永不持有
+  // 私钥），安装/卸载/离线包/refreshKeys/shell/升级入口后端硬拒（§10.3）。
+  isSharedImportServer Boolean @default(false)
+  serverShare          ServerShare?
+  importedServerShare  ImportedServerShare?
+
+  // Server Suspend/Pause
+  isSuspended             Boolean   @default(false)
+  suspendType             Int?      // 0=manual, 1=traffic_exceeded, 2=port_expired, 3=shared_share_suspended(共享配额用尽/A 暂停)
+  suspendedAt             DateTime?
+  resumeAt                DateTime? // auto-resume time (manual pause only)
+
+  // Traffic Control (mirrors ForwardEndpoint pattern)
+  periodTraffic           Int?      // GB limit per period (raw, unscaled)
+  trafficResetPeriodDays  Int?      // reset cycle in days
+  periodStartDate         DateTime?
+  // NOTE: periodUsedTraffic 为三套 high/low（合计 + 入向 + 出向）。任何写/清/重置周期用量
+  // 的代码路径必须三套同写，否则合计与方向漂移、切方向模式时误暂停。
+  periodUsedTrafficHigh   BigInt?   // 合计 high 64 bits (= in + out)
+  periodUsedTrafficLow    BigInt?   // 合计 low 64 bits
+  periodUsedTrafficInHigh  BigInt?  // 入向(下行/download/traffic_in) high
+  periodUsedTrafficInLow   BigInt?  // 入向 low
+  periodUsedTrafficOutHigh BigInt?  // 出向(上行/upload/traffic_out) high
+  periodUsedTrafficOutLow  BigInt?  // 出向 low
+  periodTrafficLimitMode   PeriodTrafficLimitMode? // null = TotalInOut（默认，比较合计列）
+
+  // Billing info (informational only, does NOT trigger suspend)
+  billingExpireAt          DateTime?
+  billingCycle             BillingCycle?
+  billingAmount            String?       // free text, e.g. "￥100", "$10"
+  autoRenew                Boolean       @default(true) // 到期后按 billingCycle 自动推进 billingExpireAt（不扣费）；关则纯手动
+
+  // Server-level firewall bindings (rule sets authored under Traffic Routing).
+  // Inbound is consumed by the worker in v1; outbound is stored only and
+  // becomes live in a follow-up (see server-inbound-firewall-design §9).
+  inboundFirewallRuleSetId  Int?
+  inboundFirewallRuleSet    FirewallRuleSet? @relation("ServerInboundFirewall", fields: [inboundFirewallRuleSetId], references: [id], onDelete: SetNull)
+  outboundFirewallRuleSetId Int?
+  outboundFirewallRuleSet   FirewallRuleSet? @relation("ServerOutboundFirewall", fields: [outboundFirewallRuleSetId], references: [id], onDelete: SetNull)
+
+  // 动态 IP 出口：节点自探测公网出口并上报，供同租界 forwarder 入站防火墙豁免层合成。
+  dynamicIp               Boolean @default(false)
+  // 类型化 JSON: Vec<ReportedEgressIp{ip,last_seen}>；上报整列替换，上限 16 条。
+  reportedEgressIpsJson   String  @default("[]")
+  // 动态入口地址：把 dynamicIp 探测到的公网出口 IP 同时用作连接地址（P5，
+  // 复用 dynamic-ingress-address 设计 §4.1 resolver，语义与 ForwardEndpoint.dynamicIngress 对称）。
+  dynamicIngress           Boolean @default(false)
+
+  // 入口 IP 变更通知代次（seq 驱动，见 design dynamic-ingress-notify-and-ddns §4.1）
+  // ingressNotifySeq：开关开启期间投影每变一次 +1
+  // lastNotifiedIngressSeq：已通知到的代次（ACK）
+  // 不变量：0 <= lastNotifiedIngressSeq <= ingressNotifySeq（additive CHECK 在 upgrader）
+  ingressNotifySeq         BigInt  @default(0)
+  lastNotifiedIngressSeq   BigInt  @default(0)
+
+  // 多租户：所属租户（null=平台）
+  tenantId                 Int?
+  tenant                   Tenant?  @relation(fields: [tenantId], references: [id])
+
+  @@index([hidden])
+  @@index([pubkey])
+  @@index([tags])
+  @@index([serverGroupId])
+  @@index([isSuspended])
+  @@index([inboundFirewallRuleSetId])
+  @@index([outboundFirewallRuleSetId])
+  @@index([tenantId])
+}
+
+model ForwardEndpoint {
+  id             Int           @id @default(autoincrement())
+  name           String        @unique
+  displayName    String
+  ingressAddress String
+  extraIngressAddress String[] // 额外IP地址
+  servePort      Int
+  innerPort      Int?
+  protocol       String // server protocol socks5 or hammer, current only support hammer
+  protocolConfig String // protocol config json
+  privKey        String // ws private key
+  wsPort         Int? // ws port
+  password       String?
+  isPublic       Boolean       @default(false) // is public for all users
+  subscriptionId Int? // belong to which subscription user
+  subscription   Subscription? @relation(fields: [subscriptionId], references: [id])
+  setupScript    String?
+  tokenId        String        @unique
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+  trafficScale   Float?
+  allowIpV6      Boolean       @default(false)
+  autoAdd        Boolean       @default(false)
+  upBandwidth               Int?              // Server-specific bandwidth limit in Mbps
+  downBandwidth             Int?              // Server-specific bandwidth limit in Mbps
+  bwLimitType               BwLimitType?           // BandWidht Limit type TotalUpAndDown(using bandwidth) or StandaloneUpAndDown(using upBandwidth and downBandwidth)
+  autoIp         Boolean      @default(false) // auto ip
+  // P0-B auto-IP capability secret (envelope): hash for verify, enc1 for re-embed on setup.
+  // AAD = auto_ip|{endpoint_id}. Null = legacy path (device token_id for update-ip, Release N).
+  autoIpCredHash   String?    // sha256 hex of plaintext AUTO_IP_CRED
+  autoIpSecretEnc  String?    // enc1... AEAD of plaintext AUTO_IP_CRED
+  isGroup        Boolean      @default(false) // is a special fwd endpoint which is a group
+  groupId        Int?                         // if is a fwd group, the referenced fwd group id
+  UdpSISO        Boolean      @default(false) // UDP原进原出
+  enableUOT    Boolean       @default(false) // 使用UOT，而非原生UDP
+  tasks          ForwarderTask[] // 关联的任务
+  enable         Boolean      @default(true)
+  trafficResetPeroidDays  Int?  // 流量重置周期天数，用来判断是否实际启用这个转发端点
+  periodTraffic           Int? // Unit: GB 周期内流量数量，如果周期内超过这个值，则禁用转发端点
+  periodStartDate   DateTime?
+  // NOTE: periodUsedTraffic 为三套 high/low（合计 + 入向 + 出向），写/清/重置须三套同写。
+  periodUsedTrafficHigh   BigInt?  // 合计 high (= in + out)
+  periodUsedTrafficLow    BigInt?  // 合计 low
+  periodUsedTrafficInHigh  BigInt? // 入向(下行/download) high
+  periodUsedTrafficInLow   BigInt? // 入向 low
+  periodUsedTrafficOutHigh BigInt? // 出向(上行/upload) high
+  periodUsedTrafficOutLow  BigInt? // 出向 low
+  periodTrafficLimitMode   PeriodTrafficLimitMode? // null = TotalInOut（默认）
+  customConfig String?  // 自定义配置json格式
+  tags         String[]     @default([])
+  isSuspended             Boolean   @default(false)
+  // 0=manual, 1=traffic_exceeded, 3=share_revoked, 4=share_expired, 5=share_suspended(local-only projection)
+  suspendType             Int?
+  suspendedAt             DateTime?
+  resumeAt                DateTime?
+  latencyTestConfigs  ForwarderLatencyTestConfig[]
+  sslCertificateId  Int?
+  sslCertificate    SslCertificate? @relation(fields: [sslCertificateId], references: [id])
+  sslSyncPending    Boolean         @default(false)
+  // Billing info (informational only, does NOT trigger suspend)
+  billingExpireAt   DateTime?
+  billingCycle      BillingCycle?
+  billingAmount     String?
+  autoRenew         Boolean       @default(true) // 到期后按 billingCycle 自动推进 billingExpireAt（不扣费）；关则纯手动
+  // [deprecated since 多密钥共享 v2] v1 互斥锁定标记，恒为 false，不再读写。
+  // v2 中 A 与 B 面板同时使用端点（per-share 独立密钥），不存在锁定语义。
+  sharedOut         Boolean   @default(false)
+  // 跨面板共享（B 侧）：true = 该端点是从其他面板导入的共享端点，
+  // 密码/连接信息永不暴露给前端，禁止编辑/复制/改密码/部署脚本。
+  isSharedImport    Boolean   @default(false)
+  // 多密钥共享 v2：该端点 forwarder KeyRing 的版本号（端点级单调递增）。
+  // 任何 share 状态/白名单变化 +1 并推送 forwarder；heartbeat 对账补推。
+  keyringRevision   BigInt    @default(0)
+  // 跨面板连接真相 revision：A 修改 worker→forwarder 建连白名单字段时 +1；
+  // B 通过 S2S status/report 拉取 SharedClientConnectInfo 对齐。
+  connectRevision   BigInt    @default(0)
+  // Owner 入站防火墙：仅 key_id=0 生效；revision 用于热更新与 heartbeat 对账。
+  inboundFirewallRuleSetId Int?
+  inboundFirewallRuleSet   FirewallRuleSet? @relation("ForwarderInboundFirewall", fields: [inboundFirewallRuleSetId], references: [id], onDelete: SetNull)
+  inboundFirewallRevision  BigInt    @default(0)
+  // 动态 IP 出口：节点自探测公网出口并上报；豁免层 revision 与 keyring/inbound 同族。
+  dynamicIp                Boolean   @default(false)
+  // 动态入口地址：把 dynamicIp 探测到的公网出口 IP 同时用作连接地址（供其他
+  // forwarder/worker 连接），绕过 DDNS 更新延迟。开启要求 dynamicIp=true。
+  // source ∈ {Probe, Local} 且公网可路由的 IP 入选（resolver 侧过滤；代码权威，
+  // 旧注释写「仅 Probe」有误）。P4 前 shared-out 硬拒。
+  dynamicIngress           Boolean   @default(false)
+  // 类型化 JSON: Vec<ReportedEgressIp{ip,last_seen}>；上报整列替换，上限 16 条。
+  reportedEgressIpsJson    String    @default("[]")
+  dynamicExemptRevision    BigInt    @default(0)
+  shares            ForwardEndpointShare[]
+  importedShare     ImportedEndpointShare?
+  // 多租户：所属租户（null=平台）。与 subscriptionId（用户私有归属）正交：tenantId 是租界维度
+  tenantId          Int?
+  tenant            Tenant?   @relation(fields: [tenantId], references: [id])
+  @@index([tokenId])
+  @@index([tags])
+  @@index([isSuspended])
+  @@index([inboundFirewallRuleSetId])
+  @@index([tenantId])
+}
+
+// 共享配额模式：一次性总额 / 周期重置
+enum ShareQuotaMode {
+  OneTime
+  Periodic
+}
+
+// 共享状态机（A/B 两侧复用同一 enum）。多密钥 v2 语义：
+// PendingImport: 共享码已生成，B 尚未导入（share key 不进 KeyRing）
+// Active: 正常共享中（share key 进 KeyRing，携带该 share 的 CIDR 白名单）
+// Suspended: 当期配额用尽，软暂停（key 移出 KeyRing + 存量连接即断，周期到点自动恢复）
+// Expired: 到期（终态，可显式重新激活——v2 不轮换主密码，无轮换障碍）
+// Revoked: 已吊销（终态，key 移出 KeyRing + 存量连接即断）
+enum ForwardEndpointShareStatus {
+  PendingImport
+  Active
+  Suspended
+  Expired
+  Revoked
+}
+
+// A 侧（Owner）共享记录：多密钥 v2，每个端点至多 16 条非终态 share 并存（业务约束），
+// 每条 share 一个独立 sharePassword（= forwarder KeyRing 中的一个 key，key_id = share.id）。
+model ForwardEndpointShare {
+  id                     Int                        @id @default(autoincrement())
+  forwardEndpointId      Int
+  forwardEndpoint        ForwardEndpoint            @relation(fields: [forwardEndpointId], references: [id], onDelete: Cascade)
+  status                 ForwardEndpointShareStatus @default(PendingImport)
+  // 配额
+  quotaMode              ShareQuotaMode             @default(OneTime)
+  quotaTrafficGb         Int? // null = 不限流量
+  resetPeriodDays        Int? // Periodic 模式的重置周期天数
+  periodStartDate        DateTime? // 当前周期起点（A 时钟）
+  expireAt               DateTime? // 共享有效期截止（A 时钟），null = 不限
+  // S2S 鉴权：只存 sha256(token) 十六进制；import 成功后轮换
+  shareTokenHash         String                     @unique
+  shareCodeUsedAt        DateTime? // 共享码被消费（import 成功）时间
+  // 多密钥 v2：该 share 的独立密码（创建时生成，import 响应交给 B；
+  // 进入 forwarder KeyRing 作为候选 key，key_id = share.id）。明文存储与端点主密码同级敏感。
+  sharePassword          String                     @default("")
+  // per-key 入站白名单（forwarder 握手命中该 key 后校验源 IP）
+  manualCidrs            String[]                   @default([])
+  // B 上报的 worker 出口 IP 集合，类型化 JSON: Vec<PeerWorkerIp{ip,last_seen}>
+  peerWorkerIpsJson      String                     @default("[]")
+  // [deprecated since v2] per-share 白名单 revision，已被端点级 ForwardEndpoint.keyringRevision 取代
+  whitelistRevision      BigInt                     @default(0)
+  // 旧版 forwarder（Heartbeat 不带 keyring_revision = 不支持多密钥）告警标记
+  whitelistUnsupported   Boolean                    @default(false)
+  // A 侧管理员备注（价格、联系方式等，不同步给 B 端）
+  note                   String?
+  // 对端（B 面板）信息
+  peerPanelName          String?
+  peerInstanceId         String?
+  peerLastSyncAt         DateTime?
+  // 计量：B 上报的"自导入起累计入账字节"（max 合并，单调），128-bit 拆 high/low
+  reportedCumulativeHigh BigInt                     @default(0)
+  reportedCumulativeLow  BigInt                     @default(0)
+  // 周期起点快照：当期已用 = reportedCumulative - periodBase
+  periodBaseHigh         BigInt                     @default(0)
+  periodBaseLow          BigInt                     @default(0)
+  // 多密钥 v2 对账（第二计量源）：forwarder per-key 字节计数（线上字节口径）。
+  // fwdrAccum = share 生命周期累计总量（delta 累加：new>=lastSeen 加差值，new<lastSeen 视为
+  // forwarder 重启清零、加 new）；fwdrLastSeen = 上次样本原始值（回绕检测用）。
+  fwdrAccumRx            BigInt                     @default(0)
+  fwdrAccumTx            BigInt                     @default(0)
+  fwdrLastSeenRx         BigInt                     @default(0)
+  fwdrLastSeenTx         BigInt                     @default(0)
+  // 出向防火墙内联策略，类型化 JSON: OutboundSharePolicy；null = 未配置
+  // （forwarder 仍强制内建基线：私网/回环/本机 IP 拒绝）
+  outboundPolicyJson     String?
+  // per-key 限速配置，类型化 JSON: ShareBandwidthLimitDto；null = 不限速
+  bandwidthLimitJson     String?
+  // 出向防火墙拦截计数（delta 累加，同 fwdrAccumRx 模式；口径 = 被拒候选地址次数）
+  fwdrAccumRejects       BigInt                     @default(0)
+  fwdrLastSeenRejects    BigInt                     @default(0)
+  // 双源偏差告警节流：最近一次对账告警时间
+  reconcileAlertAt       DateTime?
+  // [deprecated since v2] 吊销不再轮换主密码（per-share key 独立，移除 key 即硬吊销）
+  rotatePasswordOnRevoke Boolean                    @default(true)
+  revokedAt              DateTime?
+  // [deprecated since v2] v1 密码轮换标记，不再读写
+  passwordRotated        Boolean                    @default(false)
+  // B 主动释放（B 删除本地端点时尽力上报）
+  releasedByPeer         Boolean                    @default(false)
+  createdAt              DateTime                   @default(now())
+  updatedAt              DateTime                   @updatedAt
+
+  @@index([forwardEndpointId])
+  @@index([status])
+}
+
+// B 侧（Consumer）导入记录：与本地 ForwardEndpoint 一对一。
+model ImportedEndpointShare {
+  id                 Int                        @id @default(autoincrement())
+  forwardEndpointId  Int                        @unique
+  forwardEndpoint    ForwardEndpoint            @relation(fields: [forwardEndpointId], references: [id], onDelete: Cascade)
+  // A 面板基础 URL（可编辑，应对 A URL 变更）
+  peerPanelUrl       String
+  peerShareId        Int
+  // B 持有的明文 token（调 A 的 S2S API 用；import 时 A 已轮换，原共享码作废）
+  shareToken         String
+  // 本面板实例 ID（防克隆：A 校验 report.instanceId 一致性）
+  instanceId         String
+  status             ForwardEndpointShareStatus @default(Active)
+  // A 回显的配额/用量
+  quotaMode          ShareQuotaMode             @default(OneTime)
+  quotaTrafficGb     Int?
+  resetPeriodDays    Int?
+  periodStartDate    DateTime?
+  expireAt           DateTime?
+  usedTrafficHigh    BigInt                     @default(0)
+  usedTrafficLow     BigInt                     @default(0)
+  // 上报基线：处理 B 侧 Redis 清零的分段累加，保证上报单调
+  // cumulative = reportBase + 当前 Redis 值；Redis 回落则 reportBase += lastRedisValue
+  reportBaseHigh     BigInt                     @default(0)
+  reportBaseLow      BigInt                     @default(0)
+  lastRedisValueHigh BigInt                     @default(0)
+  lastRedisValueLow  BigInt                     @default(0)
+  // 流量统计去 Redis(§9)：上次同步看到的 fwd period_start_date。
+  // 重置检测从「值下跳」换成「period_start 推进」，避免控制器重启 blip 误判重置 over-bill。
+  lastSeenPeriodStart DateTime?
+  // A 回显的限速配置快照（只读展示，sync 时刷新），类型化 JSON: ShareBandwidthLimitDto
+  bandwidthLimitJson String?
+  // 对端（A 面板）展示名
+  peerPanelName      String?
+  // A 时钟与 B 时钟偏差（毫秒，A server_time - B now），>5min UI 提示
+  serverTimeOffsetMs BigInt?
+  lastSyncAt         DateTime?
+  lastSyncError      String?
+  lastSyncErrorAt    DateTime?
+  // 已应用的 A 侧 connectRevision；-1 = 从未应用（升级/import 后强制对齐一次）。
+  lastConnectRevision BigInt                    @default(-1)
+  createdAt          DateTime                   @default(now())
+  updatedAt          DateTime                   @updatedAt
+
+  @@index([status])
+}
+
+// ===========================================================================
+// 跨面板服务器共享（shared-server-cross-panel-design.md）
+// A 面板（Owner）拥有机器并强制限制；B 面板（Tenant）在限制内运营。
+// 与端点共享角色相反：共享码由 B 生成，token 明文由 A 持有，S2S 仅 A→B。
+// ===========================================================================
+
+// 共享服务器状态机（§3.2）。每侧合法子集不同：
+// PendingImport 仅 B 侧（邀请未被消费）；PendingInstall 仅 A 侧（已导入、
+// worker 从未连上，B 侧映射为 Active+离线）。其余两侧同义。
+enum ServerShareStatus {
+  PendingImport
+  PendingInstall
+  Active
+  Suspended // 配额用尽/A 手动暂停（worker 停全部 tenant 端口）
+  Expired // 到期（终态，可显式重激活）
+  Revoked // A 吊销（终态）
+  Released // B 主动释放（终态，A 收到后提示卸载）
+}
+
+// A 侧（Owner）共享记录：与影子服务器行一对一（§4.1）。
+// 限制配置 lower 成 wire SharedLimits 经 owner 连接下发 worker 强制执行；
+// 核算数据来自 worker 第一手 SharedUsageReport（max 合并）。
+model ServerShare {
+  id                 Int               @id @default(autoincrement())
+  outboundEndpointId Int               @unique
+  outboundEndpoint   OutboundEndpoint  @relation(fields: [outboundEndpointId], references: [id], onDelete: Cascade)
+  status             ServerShareStatus @default(PendingInstall)
+
+  // ---- S2S 客户端材料（A 是调用方，与端点共享相反）----
+  peerPanelUrl         String // B 面板 URL（来自共享码）
+  peerInviteId         Int // B 侧 ImportedServerShare.id
+  shareToken           String // A 持有的明文 token（import 后已轮换）
+  instanceId           String // A 面板实例 ID（幂等/防克隆）
+  peerPanelName        String?
+  peerMinWorkerVersion String? // B 声明的最低 worker 版本（push 响应回带刷新）
+  peerLastPushAt       DateTime?
+  lastPushError        String?
+  lastPushErrorAt      DateTime?
+
+  // ---- 两阶段导入中间态（#1 分布式原子性，prepare/confirm/abort）----
+  // importConfirmedAt = NULL 且 pendingPeerToken 非空 = 本地已提交但 B 尚未 confirm
+  // 的「在途」行；confirm 成功后落 importConfirmedAt 并清空 pendingPeerToken。
+  // 老数据两列皆 NULL → 天然视为已确认（无需回填，见 share_import_pending）。
+  importConfirmedAt DateTime? // B 已 confirm 的时刻；NULL=在途/老数据
+  pendingPeerToken  String? // 原始共享码 token（鉴权 confirm/abort/re-prepare），confirm 成功即清空
+
+  // ---- B（tenant）控制面接入信息（S2S import 响应回带，安装脚本写入
+  // config.json 顶层 mgmt_*；§6.1 布局决策）。可空：旧行无值（生成安装
+  // 脚本前置校验非空）。 ----
+  peerMgmtWsEndpoint        String? // worker 连 B 控制器的 WS 地址（B 须公网可达）
+  peerMgmtArrangerPublicKey String? // B 控制器公钥（worker 验签 B 控制面）
+
+  // ---- 限制配置（D7 全集；lower 成 SharedLimits，§7.1）----
+  quotaMode               ShareQuotaMode @default(OneTime)
+  quotaTrafficGb          Int? // null = 不限
+  resetPeriodDays         Int?
+  periodStartDate         DateTime?
+  expireAt                DateTime?
+  maxPorts                Int? // 端口数量上限，null = 不限
+  portRangeStart          Int // 端口范围（安装时固化为该 service 监听区间）
+  portRangeEnd            Int
+  bandwidthLimitJson      String? // 类型化 JSON: ShareBandwidthLimitDto（复用端点共享类型）
+  allowInboundProxy       Boolean        @default(true)
+  allowedInboundProtocols String[]       @default([]) // 空 = 全部 7 种（语义同 OutboundEndpoint 同名列）
+  allowForward            Boolean        @default(true) // 转发端点/链
+  allowSpeedTest          Boolean        @default(false) // 共享机默认关：测速走裸 reqwest 出站、不计配额（D3），默认不放行防白嫖
+  allowTenantLogs         Boolean        @default(true) // D10 一键开关
+  allowTenantDebugExport  Boolean        @default(true)
+  maxConnNum              Int?
+  maxIpNum                Int?
+  outboundPolicyJson      String? // 类型化 JSON: OutboundSharePolicy（复用端点共享类型）
+  limitsRevision          BigInt         @default(0) // 单调递增，worker 对账（§7.2）
+  // worker 经 SharedUsageReport 回带的**已生效** revision（控制器写入；#251）。
+  // NULL = 从未上报过（未安装 / 非共享出口 / 老库）。周期补推据此去重：仅当它
+  // != limitsRevision 才需要再推——HTTP 200 只代表控制器入队成功，不代表 worker 应用了。
+  lastWorkerLimitsRevision BigInt?
+
+  // ---- 核算（worker owner conn 第一手上报，max 合并；§7.5）----
+  usedCumulativeRxHigh BigInt @default(0)
+  usedCumulativeRxLow  BigInt @default(0)
+  usedCumulativeTxHigh BigInt @default(0)
+  usedCumulativeTxLow  BigInt @default(0)
+  periodBaseHigh       BigInt @default(0) // 当期已用 = cumulative - periodBase
+  periodBaseLow        BigInt @default(0)
+  lastActivePorts      Int    @default(0)
+  lastActiveConns      Int    @default(0)
+  lastDeviceCount      Int    @default(0) // D2: A 只看设备计数
+
+  note           String? // A 管理员备注，不同步 B
+  // #336：删除请求时刻（软删）。非 NULL = 管理员已删除、UI 立即隐藏，但 worker 尚未回带
+  // 确认终态 revision，行保留让 60s tick 继续补推；`lastWorkerLimitsRevision == limitsRevision`
+  // 后由 tick 硬删（remove_line 级联）。NULL = 未请求删除（含全部存量行）。
+  purgeRequestedAt DateTime?
+  revokedAt      DateTime?
+  releasedByPeer Boolean   @default(false)
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@index([status])
+}
+
+// B 侧（Tenant）记录：邀请阶段 outboundEndpointId 为 null，
+// S2S import 成功后创建服务器行并绑定（§4.3）。
+model ImportedServerShare {
+  id                 Int               @id @default(autoincrement())
+  outboundEndpointId Int?              @unique
+  outboundEndpoint   OutboundEndpoint? @relation(fields: [outboundEndpointId], references: [id], onDelete: SetNull)
+  status             ServerShareStatus @default(PendingImport)
+  displayName        String // B 创建邀请时的展示名（import 后作为服务器行初始名）
+  // 创建邀请的 B 管理员 token_id：import 时把服务器行 push 进其 subscription.lines
+  createdByTokenId   String?
+
+  // ---- S2S 服务端材料（B 是被调方）----
+  shareTokenHash         String  @unique // sha256(token)；import 成功后轮换
+  previousShareTokenHash String? @unique // import 响应丢失时，同 peer 幂等重试可用的上一轮 token hash
+  shareCodeUsedAt        DateTime?
+  peerInstanceId         String? // A 面板实例 ID（幂等/防抢注）
+  peerPanelName          String? // A 可选自报，允许匿名
+  // B 创建邀请时填写：worker 接入 B 控制面的公网可达地址
+  mgmtWsEndpoint   String
+  minWorkerVersion String? // B 的最低 worker 版本要求（D9）
+
+  // ---- 两阶段导入预留（#1 prepare 写 / confirm 晋升 / abort|sweep 清）----
+  // 预留期间 status 仍是 PendingImport（码未消费、token 未轮换），单行天然互斥。
+  // reservationNewTokenHash 是暂存值，confirm 时晋升进已 @unique 的 shareTokenHash，
+  // 故此处**不**加 @unique（re-prepare 会覆写）。
+  reservationInstanceId      String?
+  reservationPubkey          String?
+  reservationNewTokenHash    String?
+  reservationLimitsJson      String? // 类型化 JSON: ServerShareLimitsDto
+  reservationIngressIp       String?
+  reservationPreparedAt      DateTime? // 预留时刻（lazy 覆盖 + sweep TTL 判定锚点）
+  reservationPeerPanelName   String? // A 自报展示名（confirm 时晋升进 peerPanelName）
+  reservationServerTimeOffsetMs BigInt? // A 时钟偏差（confirm 时晋升进 serverTimeOffsetMs）
+
+  // ---- A 推送的快照（只读展示 + B 侧预校验镜像，ingest 时
+  // PendingInstall→Active 映射，§3.2 三层 DTO）----
+  limitsSnapshotJson String? // 类型化 JSON: ServerShareLimitsDto
+  limitsRevision     BigInt         @default(0)
+  usedTrafficHigh    BigInt         @default(0)
+  usedTrafficLow     BigInt         @default(0)
+  quotaMode          ShareQuotaMode @default(OneTime)
+  quotaTrafficGb     Int?
+  resetPeriodDays    Int?
+  periodStartDate    DateTime?
+  expireAt           DateTime?
+  serverTimeOffsetMs BigInt? // A 时钟偏差（>5min UI 提示，沿用端点共享）
+  lastPushAt         DateTime?
+  workerOnline       Boolean        @default(false) // A push 回带（B 也有自己的第一手在线状态）
+  workerVersion      String?
+  // A（owner）上次 push 下发的机器入口 IP。用于「A 改 IP 自动同步」：仅当 B 侧
+  // 服务器行 ingressIpv4 仍等于本值（即 B 未把它自定义成域名等）时，push 才自动
+  // 替换成 A 的新 IP；否则保留 B 的自定义值。confirm 时初始化 = A 传来的 IP。
+  ownerIngressIp     String?
+
+  // A 侧动态 IP 开关与新鲜出口集合（S2S push 整列替换；B 侧 sweep 并入租界桶）。
+  ownerDynamicIp     Boolean @default(false)
+  // 类型化 JSON: Vec<ReportedEgressIp{ip,last_seen}>；last_seen = B 收到 push 的时间。
+  ownerDynamicIpsJson String @default("[]")
+  // 租界固化承载列：邀请创建时一次写入，confirm 复制到影子 OutboundEndpoint.tenantId。
+  // null = 平台 / 未判定（存量解析链见 design §3.6）。
+  tenantId           Int?
+  tenant             Tenant? @relation(fields: [tenantId], references: [id])
+
+  // ---- worker clamp 拒因快照（B 侧落库，阶段 3.6 / §7.3）----
+  // worker tenant conn 每次 PortMap clamp 后上报 `SharedPortRejections` 全量快照，
+  // B 控制器整体覆盖写入（类型化 JSON: Vec<SharedPortRejection>；空集 = 写 null）。
+  // B 端口 UI 据此回显"被 A 限制拒绝"的端口与拒因（阶段 6）。
+  portRejectionsJson String?
+  portRejectionsAt   DateTime?
+
+  releasedAt DateTime? // B 主动释放时间
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  @@index([status])
+  @@index([tenantId])
+}
+
+model Port {
+  id                        Int               @id @default(autoincrement())
+  displayName               String
+  portV4                    Int
+  targetAddressV4           String
+  targetPortV4              Int
+  traffic_in                BigInt
+  traffic_out               BigInt
+  createdAt                 DateTime          @default(now())
+  updatedAt                 DateTime          @updatedAt
+  lastEditedAt              DateTime?         // Last time port was edited via UI
+  subscription              Subscription?     @relation(fields: [subscriptionId], references: [id])
+  subscriptionId            Int?
+  outboundEndpoint          OutboundEndpoint? @relation(fields: [outboundEndpointId], references: [id])
+  outboundEndpointId        Int?
+  forwardProtocol           String?
+  forwardConfig             String?
+  relatedForwardEndpointIds Int[]
+  targetAddrList          String[]
+  selectMode               Int?
+  testMethod               Int?
+  isSuspended              Boolean           @default(false)
+  bandwidth                 Int?              // Port-specific bandwidth limit in Mbps
+  upBandwidth               Int?              // Port-specific bandwidth limit in Mbps
+  downBandwidth             Int?              // Port-specific bandwidth limit in Mbps
+  bwLimitType               BwLimitType?           // BandWidht Limit type TotalUpAndDown(using bandwidth) or StandaloneUpAndDown(using upBandwidth and downBandwidth)
+  dynamicBw                String? 
+  acceptProxyProtocol       Boolean           @default(false) // Whether to accept PROXY protocol from client
+  sendProxyProtocolVersion  Int?              // PROXY protocol version: null/0=disabled, 1=v1, 2=v2
+  forwardMode               String?           // direct | relay | chain | tot; NULL = derive from legacy columns
+  chainMode                 Boolean           @default(false) // chain mode
+  forwardChainTestMethod Int? @default(0)
+  forwardChainSmartSelect Boolean? @default(true)
+  forwardChainFixedHopsNum  Int?
+  forwardChainFixedLastHopsNum Int?
+  // Per-port "network detailed planning" override layer (JSON of NetworkPlan).
+  // Additive nullable: NULL = no override (base topology unchanged). Never
+  // mutates the shared chain/group/endpoint definitions.
+  networkPlan               String?
+
+  relatedTotServerIds Int[]
+
+  totServerTestMethod Int?
+  totServerSelectMode Int?
+  totSendMode         Int?
+  // TOT 高级子流(链式/多端点优选)配置。JSON of Vec<TotSubStreamSpec>。
+  // NULL/空 = 全部子流来自 relatedForwardEndpointIds(旧行为，每条子流 1 个转发端点)。
+  // 这里的端点 id 不写入 relatedForwardEndpointIds(否则会被当成单端点子流展开)。
+  totSubStreams       String?
+  balanceStrategy   Int?
+  inboundProxyConfig String?
+  outboundProxyConfig String?   // JSON: OutboundProxyConfig; null = 直连（现状）
+  // Inbound-proxy TLS certificate binding (e.g. AnyTLS). NULL for Manual-mode PEM or no TLS.
+  // When the inboundProxyConfig JSON uses InboundTlsSource::Certificate { cert_id }, this
+  // column must equal that cert_id so ssl_certificate_manage binding/delete protection sees it.
+  inboundSslCertificateId Int?
+  inboundSslCertificate   SslCertificate? @relation("PortInboundSslCert", fields: [inboundSslCertificateId], references: [id], onDelete: SetNull)
+  customConfig       String?
+  enableUdp          Boolean           @default(true) // Whether to enable UDP forwarding for this port
+  syncedToWorkerAt   DateTime?         // Last time port was synced to worker (display only since rev gate)
+  syncErrorMessage   String?           // Error message if sync to worker failed
+  syncErrorAt        DateTime?         // When the sync error occurred
+  configRev          Int               @default(0) // 配置代次：仅同步影响修改递增（设计 port-sync-failure-visibility §10.1）
+  syncedRev          Int               @default(0) // 已被 worker 确认的代次：唯一写入点 = success writer（§10.3）
+
+  // 分流规则集
+  trafficRuleSetId   Int?
+  trafficRuleSet     TrafficRuleSet?   @relation("PortTrafficRuleSet", fields: [trafficRuleSetId], references: [id], onDelete: SetNull)
+
+  // 端口级入站防火墙规则集（附加闸门，仅 direction=INBOUND）
+  inboundFirewallRuleSetId Int?
+  inboundFirewallRuleSet   FirewallRuleSet? @relation("PortInboundFirewall", fields: [inboundFirewallRuleSetId], references: [id], onDelete: SetNull)
+
+  tags               String[]          @default([])
+
+  // 从聚合订阅链接(Clash/Surge/Shadowrocket 等)与 zf-client 节点发现接口中排除该端口对应的节点。
+  // 仅对已开启入站代理(inboundProxyConfig 非空)的端口有意义；不影响该端口自身的单端口直链分享 URL。
+  excludeFromSubscription Boolean       @default(false)
+
+  // Port Suspend tracking
+  suspendType             Int?      // 0=manual, 1=traffic_exceeded, 2=port_expired
+  suspendedAt             DateTime?
+  resumeAt                DateTime?  // auto-resume time
+
+  // 单个转发目标定时暂停的最近恢复时刻 = min(直连行 `# pause until` ∪ networkPlan.disabled_until)。
+  // 仅供控制器 port_target_resume 扫描器命中（WHERE targetResumeAt <= now）；派生自 targetAddrList/networkPlan，
+  // **绝不**进 config hash / derived_key（否则自动恢复会无谓 churn 哈希）。NULL = 无定时暂停。
+  targetResumeAt          DateTime?
+
+  // Port Traffic Control
+  periodTraffic           Int?      // GB limit (post-multiplier/scaled traffic)
+  trafficResetPeriodDays  Int?      // reset cycle in days, null=no auto-resume
+  periodStartDate         DateTime?
+  // NOTE: periodUsedTraffic 为三套 high/low（合计 + 入向 + 出向），写/清/重置须三套同写。
+  periodUsedTrafficHigh   BigInt?   // 合计 128-bit counter, high 64 bits (= in + out)
+  periodUsedTrafficLow    BigInt?   // 合计 128-bit counter, low 64 bits
+  periodUsedTrafficInHigh  BigInt?  // 入向(下行/download/traffic_in) high
+  periodUsedTrafficInLow   BigInt?  // 入向 low
+  periodUsedTrafficOutHigh BigInt?  // 出向(上行/upload/traffic_out) high
+  periodUsedTrafficOutLow  BigInt?  // 出向 low
+  periodTrafficLimitMode   PeriodTrafficLimitMode? // null = TotalInOut（默认）
+
+  // Port Limits
+  allowIpNum              Int?      // 端口级别最大来源IP数
+  allowConnNum            Int?      // 端口级别每IP最大连接数
+  expireAt                DateTime? // 端口到期时间，到期后自动暂停 suspend_type=2
+
+  // 流量统计去 Redis（Phase 4）
+  lastActiveAt            DateTime? // 替代 Redis port:last_active(60d)：端口最近有流量时刻
+  statsClearedAt          DateTime? // 替代 cleared_at 水位 + clear cooldown 原子 claim(§8)
+
+  @@index([portV4])
+  @@index([expireAt])
+  @@index([trafficRuleSetId])
+  @@index([inboundFirewallRuleSetId])
+  @@index([tags])
+  @@index([subscriptionId])
+  @@index([outboundEndpointId])
+  @@index([outboundEndpointId, subscriptionId])
+  // #536：同一服务器同一监听端口只能有一行。应用层只有 5s 不续期的 Redis 行锁 + worker netstat
+  // 占用探测，挡不住并发建/改同号端口；以 DB 唯一约束为最终闸（撞约束 = P2002 → 「端口已被占用」）。
+  // 存量重复由 migrate-hook 0004 在 db push 前预检并中止升级（不自动删用户端口）。
+  @@unique([outboundEndpointId, portV4])
+  @@index([outboundEndpointId, subscriptionId, portV4])
+  @@index([isSuspended])
+  @@index([periodTraffic])
+  @@index([inboundSslCertificateId])
+  @@index([targetResumeAt])
+}
+
+// 流量统计去 Redis：批次去重权威表（Phase 5 起为唯一去重真源，flush 时实时查询；无进程内 seen 窗口）。
+// 不变量2：flush 中本表 INSERT 与计数 UPDATE 在**同一事务**原子提交 ⇒ 增量被计入 ⟺ batchId 入本表
+// ⇒ over-count 结构上不可能（重发被 INSERT ON CONFLICT / 窗口内折叠拦下）。3d 窗口由 expiresAtMs GC。
+model ProcessedTrafficBatch {
+  batchId       String @id // UUID v4
+  kind          Int        // 0=Port 1=ForwardEndpoint(TrafficBatchKind)；#470 隔离尝试的合成身份也写 0（列只写不读）
+  processedAtMs BigInt
+  expiresAtMs   BigInt
+
+  @@index([expiresAtMs])
+}
+
+model MgmtAuthorization {
+  id        Int      @id @default(autoincrement())
+  name      String
+  pubkey    String   @unique
+  blocked   Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([pubkey])
+  @@index([blocked])
+}
+
+model TgData {
+  id      Int    @id @default(autoincrement())
+  chat_id BigInt @unique
+  data    String
+}
+
+model Package {
+  id                    Int           @id @default(autoincrement())
+  name                  String        @unique // 套餐名称
+  displayName           String        // 套餐显示名称
+  description           String?       // 套餐描述
+  
+  // 基本配置
+  bandwidth             Int?          // 带宽限制 (Mbps)
+  upBandwidth         Int?              // Package upload bandwidth limit in Mbps
+  downBandwidth       Int?              // Package download bandwidth limit in Mbps
+  bwLimitType         BwLimitType?      // BandWidht Limit type TotalUpAndDown(using bandwidth) or StandaloneUpAndDown(using upBandwidth and downBandwidth)
+  dynamicBw           String? 
+  totalTraffic          BigInt        // 总流量 (字节)
+  maxPortsPerServer     Int           // 每服务器最大端口数
+  totalMaxPorts         Int?          // 所有线路合计端口数上限（可选）; null/<=0 = 不限制
+  allowForwardEndpoint  Boolean       @default(false)
+  allowIpNum            Int?          // 允许IP数量
+  allowConnNum          Int?          // 每IP连接数限制
+  
+  // 计费配置 (复用Subscription模型的字段设计)
+  billingType           Int?          // 计费类型: 0=周期计费, 1=一次性计费
+  basePrice             Int?          // 基础价格
+  recurringPrice        Int?          // 周期价格
+  recurringPriceMode    Int?          // null/0=与初始相同, 1=固定, 2=相对
+  recurringPriceRate    Float?        // 续费折扣比例，仅 mode=2 时使用
+  resetDays             Int?          // 重置天数（周期计费使用）
+  trafficResetDays      Int?          // 流量重置周期天数
+  
+  // 套餐状态
+  isActive              Boolean       @default(true)
+  isDefault             Boolean       @default(false) // 是否为默认套餐
+  isPublic              Boolean       @default(false) // 是否是公开可购买套餐
+  isDeleted             Boolean       @default(false) // 是否删除标记
+
+  // 库存配置
+  stock                 Int?          // 总库存（可售份数），null = 不限量
+  soldCount             Int           @default(0) // 已售份数（不限量套餐也累加，作销量统计）
+
+  // 线路配置
+  packageLines          PackageLine[]
+  
+  // 转发端点配置
+  packageForwardEndpoints PackageForwardEndpoint[]
+  
+  // 关联的订阅
+  subscriptions         Subscription[]
+
+  // 关联的订单
+  orders                Order[]
+
+  // 关联的兑换码
+  redeemCodes           RedeemCode[]
+
+  allowServerMonitoring Boolean?      // null=跟随系统设置, true=允许, false=禁止
+  allowInboundProxy     Boolean?      // null=不限制, true=允许, false=禁止 (套餐总开关)
+  // 入站代理协议「变体级」白名单（套餐级 entitlement）。空=不限制。packageLine 非空覆盖此值。
+  allowedInboundProtocols String[]    @default([])
+  periodUnit            Int?          // 0=DAY, 1=MONTH, 2=QUARTER(3months), 3=YEAR
+  periodCount           Int?          // 周期数值（天数或月数等）
+  autoRenewalMode       Int?          // [DEPRECATED] 旧 LowTraffic 续费基准日期，已弃用；保留列兼容老库，代码不再读写
+  // 流量包自动补充配置（均可选，null = 该套餐不支持自动补流量）
+  topupTrafficGb        Int?          // 单次补充流量大小（GB）
+  topupPriceCents       Int?          // 单次补充流量价格（分）
+  topupMaxPerPeriod     Int?          // 每个流量重置周期最多自动补几次（null = 回落到默认 DEFAULT_TOPUP_MAX_PER_PERIOD）
+
+  // 订阅链接功能：作为 package subscription 的运行期继承默认（非购买时复制到 Subscription）
+  allowSubLink          Boolean?      // null=继承系统默认
+  maxSubTemplates       Int?          // null=继承系统默认
+  maxSubLinks           Int?          // null=继承系统默认
+
+  // 端口入站防火墙策略（套餐级默认；null=不设置/不强制）
+  defaultInboundFirewallRuleSetId Int?
+  defaultInboundFirewallRuleSet   FirewallRuleSet? @relation("PackageDefaultInboundFirewall", fields: [defaultInboundFirewallRuleSetId], references: [id], onDelete: SetNull)
+  inboundFirewallRequired         Boolean?
+
+  createdAt             DateTime      @default(now())
+  updatedAt             DateTime      @updatedAt
+
+  // 多租户：所属租户（null=平台）。isPublic 语义收窄为"租界内公开"
+  tenantId              Int?
+  tenant                Tenant?       @relation(fields: [tenantId], references: [id])
+
+  @@index([name])
+  @@index([isActive])
+  @@index([isDefault])
+  @@index([defaultInboundFirewallRuleSetId])
+  @@index([tenantId])
+}
+
+model PackageLine {
+  id              Int       @id @default(autoincrement())
+  packageId       Int
+  package         Package   @relation(fields: [packageId], references: [id], onDelete: Cascade)
+  lineId          Int       // 关联 OutboundEndpoint.id
+  
+  // 线路特定配置
+  bandwidthLimit  Int?      // 该线路的带宽限制 (Mbps)
+  upBandwidth         Int?              // User-specific upload bandwidth limit in Mbps
+  downBandwidth       Int?              // User-specific download bandwidth limit in Mbps
+  bwLimitType         BwLimitType?      // BandWidht Limit type TotalUpAndDown(using bandwidth) or StandaloneUpAndDown(using upBandwidth and downBandwidth)
+  dynamicBw           String? 
+  trafficScale    Float?    // 流量倍率 (默认 1.0)
+  lineTraffic     BigInt?   // 该线路的流量限制 (字节)
+  maxPortsNumber  Int?      // 该线路的端口数量限制
+  allowInboundProxy Boolean? // null=继承套餐, true=允许, false=禁止
+  // 入站代理协议「变体级」白名单（线路级 entitlement）。空=本层无覆盖、继续 fallback 到套餐级；
+  // 非空=本线路独立白名单（最具体优先）。
+  allowedInboundProtocols String[] @default([])
+
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  
+  @@unique([packageId, lineId])
+  @@index([packageId])
+  @@index([lineId])
+}
+
+model PackageForwardEndpoint {
+  id                Int       @id @default(autoincrement())
+  packageId         Int
+  package           Package   @relation(fields: [packageId], references: [id], onDelete: Cascade)
+  forwardEndpointId Int       // 关联 ForwardEndpoint.id
+  
+  // 转发端点特定配置
+  trafficScale      Float?    // 流量倍率 (默认 1.0)
+  
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  
+  @@unique([packageId, forwardEndpointId])
+  @@index([packageId])
+  @@index([forwardEndpointId])
+}
+
+model SubscriptionLineUsage {
+  id                 Int           @id @default(autoincrement())
+  subscriptionId     Int
+  lineId             Int           // OutboundEndpoint.id
+  usedTrafficLow     BigInt?       // 该订阅在该线路上的总使用流量低64位 (字节)
+  usedTrafficHigh    BigInt?       // 该订阅在该线路上的总使用流量高64位 (字节)
+  createdAt          DateTime      @default(now())
+  updatedAt          DateTime      @updatedAt
+  
+  subscription       Subscription  @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+  
+  @@unique([subscriptionId, lineId])
+  @@index([subscriptionId])
+  @@index([lineId])
+}
+
+model LatencyTestConfig {
+  id                Int            @id @default(autoincrement())
+  serverId          Int            // 关联OutboundEndpoint.id
+  displayName       String         // 测试目标显示名称
+  targetAddress     String         // 目标地址(支持IP或域名)
+  targetPort        Int?           // TCP端口(TCP ping需要)
+  testType          String         // "tcp" 或 "icmp"
+  packetSize        Int?           // ICMP包大小(默认64字节)
+  timeout           Int            @default(5000) // 超时时间(毫秒)
+  interval          Int            @default(60) // 测试间隔(秒)
+  alertThreshold    Int            @default(5) // 丢包率告警阈值(%)，例如5表示丢包率>5%触发告警
+  isPublic          Boolean        @default(false) // 是否所有用户可见
+  isEnabled         Boolean        @default(true) // 是否启用
+  createdBy         Int            // 创建者subscription ID
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
+  
+  server            OutboundEndpoint @relation(fields: [serverId], references: [id], onDelete: Cascade)
+  creator           Subscription?    @relation(fields: [createdBy], references: [id], onDelete: Cascade)
+  
+  @@index([serverId])
+  @@index([isEnabled])
+  @@index([isPublic])
+  @@index([serverId, isEnabled])
+}
+
+model ForwarderLatencyTestConfig {
+  id                  Int            @id @default(autoincrement())
+  forwardEndpointId   Int
+  displayName         String
+  targetAddress       String
+  targetPort          Int?
+  testType            String         // "tcp" or "icmp"
+  packetSize          Int?
+  timeout             Int            @default(5000)
+  interval            Int            @default(60)
+  alertThreshold      Int            @default(5)
+  isEnabled           Boolean        @default(true)
+  createdBy           Int
+  createdAt           DateTime       @default(now())
+  updatedAt           DateTime       @updatedAt
+
+  forwardEndpoint     ForwardEndpoint @relation(fields: [forwardEndpointId], references: [id], onDelete: Cascade)
+  creator             Subscription?   @relation("ForwarderLatencyCreator", fields: [createdBy], references: [id], onDelete: Cascade)
+
+  @@index([forwardEndpointId])
+  @@index([isEnabled])
+  @@index([forwardEndpointId, isEnabled])
+}
+
+model LatencyDiagnosticRecord {
+  id             Int      @id @default(autoincrement())
+  scope          String   // "config" or "port"
+  serverId       Int
+  subjectId      Int      // config_id or port_id
+  targetAddress  String
+  testId         String?
+  measuredAt     DateTime
+  diagnosticJson String
+  createdAt      DateTime @default(now())
+
+  @@index([scope, serverId, subjectId, measuredAt(sort: Desc)])
+  @@index([scope, serverId, measuredAt(sort: Desc)])
+  @@index([scope, serverId, subjectId, targetAddress, measuredAt], map: "lat_diag_scope_sid_subj_target_measured_idx")
+  @@index([measuredAt], map: "lat_diag_measured_idx") // cleanup scan only
+}
+
+// Why a source IP was recorded as blocked/suspicious. Drives the future
+// inbound-proxy probe-detection feature: a client that PASSES the inbound
+// firewall but then times out / fails the handshake is likely a scanner.
+enum InboundBlockReason {
+  FirewallReject   // dropped by the inbound firewall admission gate (v1)
+  HandshakeTimeout // passed firewall, inbound-proxy handshake timed out (future)
+  HandshakeFailed  // passed firewall, inbound-proxy handshake errored (future)
+  KickedIp         // dropped by account-level kick-IP admission gate (G2)
+}
+
+// Which binding layer produced an inbound-firewall reject. Mirrors the worker's
+// `InboundLayer` enum. `Unknown` is used for non-firewall reasons (Handshake*)
+// and old/partial reports, so the value can safely participate in the unique key
+// without Postgres NULL-distinct semantics defeating deduplication.
+enum InboundLayer {
+  Unknown
+  Server // OutboundEndpoint.inboundFirewallRuleSetId — evaluated first, short-circuits
+  Port   // Port.inboundFirewallRuleSetId — only reached if the server layer allowed
+  ForwarderOwner // ForwardEndpoint owner key (key_id=0)
+}
+
+enum InboundBlockedScopeKind {
+  Server
+  ForwardEndpoint
+}
+
+// Whether a firewall reject came from the rule set's default action or an
+// explicit matched REJECT rule. Drives the admin "one-click whitelist" hint:
+// a `DefaultReject` is overridden by any single ALLOW match, while a
+// `RuleReject` requires a higher-priority ALLOW to win.
+enum InboundRejectKind {
+  NotFirewall   // no firewall reject kind (Handshake* / old reports)
+  DefaultReject // no rule matched; fell through to the rule set's defaultAction
+  RuleReject    // matched an explicit REJECT rule
+}
+
+// Inbound blocked/suspicious source IPs (attacker/scanner audit). Reported
+// periodically by zf-worker, deduplicated per (server, port, sourceIp,
+// protocol, reason) into aligned 5-minute event-time buckets. GeoIP/ASN are
+// NOT stored — resolved at display/export time in zf-web. 30-day retention via
+// inbound_blocked_ip_cleanup_service. Admin-only viewing.
+model InboundBlockedIp {
+  id          Int                @id @default(autoincrement())
+  scopeKind   InboundBlockedScopeKind @default(Server)
+  scopeId     Int                @default(0)
+  keyId       Int                @default(0)
+  serverId    Int?               // OutboundEndpoint.id for Server scope; NULL for ForwardEndpoint scope
+  port        Int                // dst listen port (u16 widened)
+  sourceIp    String             // canonicalized source IP; no geo/asn stored
+  protocol    String             // "tcp" | "udp"
+  reason      InboundBlockReason @default(FirewallReject)
+  // Reject attribution for the admin "whitelist by source" flow. These are part
+  // of the dedup key, matching the worker-side aggregation key, so server-layer
+  // vs port-layer rejects and default-action vs explicit-rule rejects stay
+  // separately attributable. Sentinel values avoid nullable unique-key pitfalls.
+  layer       InboundLayer       @default(Unknown)     // binding layer that produced the reject (server/port)
+  rejectKind  InboundRejectKind  @default(NotFirewall) // default-action vs explicit-rule reject
+  ruleSetId   Int                @default(0)           // EVENT-TIME firewall rule set; 0 = none/unknown
+  detail      String?            // free-text (firewall reject reason / future handshake error); not in dedup key
+  bucketStart DateTime           // aligned 5-min bucket start, EVENT-TIME from worker
+  hitCount    BigInt             @default(0) // BigInt: UDP floods can overflow i32
+  firstSeen   DateTime
+  lastSeen    DateTime
+  createdAt   DateTime           @default(now())
+
+  @@unique([scopeKind, scopeId, keyId, port, sourceIp, protocol, reason, layer, rejectKind, ruleSetId, bucketStart], map: "inbound_blocked_ip_scope_bucket_uq")
+  // Query = overlap filter (lastSeen >= start AND firstSeen <= end) ORDER BY lastSeen Desc.
+  // serverId+lastSeen drives equality + lastSeen range + ordering; firstSeen<=end is a residual filter.
+  @@index([serverId, lastSeen(sort: Desc)], map: "inbound_blocked_ip_server_lastseen_idx")
+  @@index([serverId, port, lastSeen(sort: Desc)], map: "inbound_blocked_ip_server_port_lastseen_idx")
+  @@index([scopeKind, scopeId, lastSeen(sort: Desc)], map: "inbound_blocked_ip_scope_lastseen_idx")
+  @@index([scopeKind, scopeId, port, lastSeen(sort: Desc)], map: "inbound_blocked_ip_scope_port_lastseen_idx")
+  @@index([bucketStart], map: "inbound_blocked_ip_bucket_idx") // cleanup scan only
+}
+
+// Why a probe-capture session ended. PeerClosed = peer sent EOF before any cap;
+// ByteCapped = non-linger mode reached probeCaptureMaxBytes and we closed;
+// TimeCapped = hit probeCaptureMaxDurationSecs and we force-closed; Error = read error.
+enum ProbeCloseReason {
+  PeerClosed
+  ByteCapped
+  TimeCapped
+  Error
+  Datagram // a single UDP datagram (first-packet capture); connectionless, duration=0
+}
+
+// Captured inbound probe samples (honeypot). For connections REJECTED by an
+// inbound firewall rule set with `probeCaptureEnabled`, the worker captures the
+// probe: TCP holds the socket and reads up to N bytes + measures duration; UDP
+// grabs the first datagram only (connectionless — duration=0, closeReason=Datagram).
+// Deduplicated per (scope, port, sourceIp, protocol,
+// sampleHash) into aligned 5-min event-time buckets — identical payloads from a
+// scanner collapse to one row with a hit counter. Heavier rows (≤4KB bytea) →
+// shorter retention than InboundBlockedIp (7d via inbound_probe_sample_cleanup_service).
+// Admin-only viewing. GeoIP/ASN + printable preview are resolved at display time
+// in zf-web (not stored). Scope体系 reused from InboundBlockedIp; v1 only emits
+// Server scope (forwarder capture is deferred).
+model InboundProbeSample {
+  id          Int                @id @default(autoincrement())
+  scopeKind   InboundBlockedScopeKind @default(Server)
+  scopeId     Int                @default(0)
+  keyId       Int                @default(0)
+  serverId    Int?               // OutboundEndpoint.id for Server scope; NULL otherwise
+  port        Int                // dst listen port (u16 widened)
+  sourceIp    String             // canonicalized source IP; no geo/asn stored
+  protocol    String             // "tcp" | "udp"; bound from the record, part of the dedup key
+  sampleHash  String             // hex content hash of `sample`; part of the dedup key
+  sample      Bytes              // ≤ probeCaptureMaxBytes captured raw bytes
+  sampleLen   Int                @default(0) // total observed bytes (may exceed sample length); latest-wins
+  durationMsMin  Int             @default(0)
+  durationMsMax  Int             @default(0)
+  durationMsLast Int             @default(0)
+  closeReason ProbeCloseReason   @default(PeerClosed)
+  layer       InboundLayer       @default(Unknown) // binding layer that produced the reject (Server/Port)
+  ruleSetId   Int                @default(0)       // EVENT-TIME firewall rule set that captured; latest-wins, not in key
+  hitCount    BigInt             @default(0)
+  bucketStart DateTime           // aligned 5-min bucket start, EVENT-TIME from worker
+  firstSeen   DateTime
+  lastSeen    DateTime
+  createdAt   DateTime           @default(now())
+
+  @@unique([scopeKind, scopeId, keyId, port, sourceIp, protocol, sampleHash, bucketStart], map: "inbound_probe_sample_scope_bucket_uq")
+  @@index([serverId, lastSeen(sort: Desc)], map: "inbound_probe_sample_server_lastseen_idx")
+  @@index([scopeKind, scopeId, lastSeen(sort: Desc)], map: "inbound_probe_sample_scope_lastseen_idx")
+  @@index([scopeKind, scopeId, port, lastSeen(sort: Desc)], map: "inbound_probe_sample_scope_port_lastseen_idx")
+  @@index([bucketStart], map: "inbound_probe_sample_bucket_idx") // cleanup scan only
+}
+
+model SystemSettings {
+  id            Int      @id @default(autoincrement())
+  key           String   @unique // 设置键名
+  value         String   // JSON字符串格式的设置值
+  description   String?  // 设置描述
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([key])
+}
+
+// 用户通知子系统：每个 NotificationKind 一行的管理员配置
+model NotificationSetting {
+  kind       Int      @id              // NotificationKind 整数映射（见 common/src/notification）
+  enabled    Boolean  @default(true)
+  channels   Int      @default(0)      // bitflags: EMAIL=1 | TELEGRAM=2
+  thresholds String?                   // 类型化阈值 config 的 JSON 字符串，如 {"days_before":[7,3,1]} / {"percent":[50,80,100]}（用 String 存避开 pcr 对 Json? 的 codegen 缺陷）
+  bypassRate Boolean  @default(false)  // 安全类事件：跳过 per-user 限流与排队
+  updatedAt  DateTime @updatedAt
+}
+
+enum TicketStatus {
+  UserSubmitted
+  AdminReplied
+  UserReplied
+  UserClosed
+  AdminClosed
+  SystemClosed
+}
+
+enum TicketAuthorType {
+  User
+  Admin
+}
+
+enum BillingCycle {
+  Monthly
+  Quarterly
+  SemiAnnual
+  Annual
+}
+
+enum BwLimitType {
+  StandaloneUpAndDown
+  TotalUpAndDown
+}
+
+// 周期流量限额模式（服务器 / 转发端点 / 端口）。i32 映射：0/1/2/3。
+enum PeriodTrafficLimitMode {
+  TotalInOut       // 0: 进+出合计 ≥ 上限（读既有合计列，默认）
+  InboundOnly      // 1: 仅入向(下行) ≥ 上限
+  OutboundOnly     // 2: 仅出向(上行) ≥ 上限
+  EitherDirection  // 3: 入向 ≥ 上限 || 出向 ≥ 上限（共用同一阈值）
+}
+
+enum DnsProviderType {
+  CLOUDFLARE
+  // 预留其他厂商扩展位置
+  // ROUTE53
+  // DNSPOD
+  // ALIYUN
+}
+
+model TicketTopic {
+  id            Int      @id @default(autoincrement())
+  name          String   // 主题名称，如"续费"、"通用咨询"
+  placeholder   String   // 用户填写时的提示文本
+  description   String?  // 主题描述
+  isActive      Boolean  @default(true) // 是否启用
+  sortOrder     Int      @default(0) // 排序顺序
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  
+  tickets       Ticket[]
+  
+  @@index([isActive])
+  @@index([sortOrder])
+}
+
+model Ticket {
+  id              Int            @id @default(autoincrement())
+  subscriptionId  Int            // 创建工单的用户
+  topicId         Int            // 工单主题
+  title           String         // 工单标题
+  status          TicketStatus   @default(UserSubmitted) // 工单状态
+  priority        Int            @default(0) // 优先级，用于排序
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+  closedAt        DateTime?      // 关闭时间
+  autoCloseAt     DateTime?      // 自动关闭时间
+  
+  subscription    Subscription   @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+  topic           TicketTopic    @relation(fields: [topicId], references: [id])
+  messages        TicketMessage[]
+  
+  @@index([subscriptionId])
+  @@index([topicId])
+  @@index([status])
+  @@index([priority, createdAt])
+  @@index([autoCloseAt])
+}
+
+model TicketMessage {
+  id            Int              @id @default(autoincrement())
+  ticketId      Int              // 关联工单
+  authorId      Int              // 消息作者ID
+  authorType    TicketAuthorType // 作者类型: User 或 Admin
+  content       String           // 消息内容
+  createdAt     DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
+  
+  ticket        Ticket           @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  author        Subscription     @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  
+  @@index([ticketId])
+  @@index([authorId])
+  @@index([createdAt])
+}
+
+model ForwarderEndpointGroup {
+  id               Int      @id @default(autoincrement())
+  name             String   @unique  // 组名称（唯一）
+  displayName      String   // 组显示名称
+  description      String?  // 组描述
+  endpointIds      Int[]    // 包含的转发端点ID数组
+  autoDetachedEndpointIds Int[] @default([]) // #574: offline auto members, restored on fresh heartbeat
+  tokenId          String?  // legacy plaintext enrollment bearer; NULL after seal/rotate/revoke
+  // P0-B group enrollment credential (envelope)
+  enrollmentLookup     String?   @unique // sha256 hex of bearer
+  enrollmentSecretEnc  String?           // enc1... AAD=group_fwd|{id}
+  enrollmentEnabled    Boolean   @default(true)
+  enrollmentCreatedAt  DateTime?
+  enrollmentRotatedAt  DateTime?
+  enrollmentRevokedAt  DateTime?
+  enrollmentLastUsedAt DateTime?
+  allowAutoAddFwd  Boolean  @default(false)  // 是否允许自动添加转发端点
+  autoAddFwdServePort    Int?     @default(22222)  // 自动添加转发端点时的默认服务端口
+  autoAddFwdAllowIpv6    Boolean  @default(false)  // 自动添加转发端点时是否允许IPv6
+  autoAddFwdTrafficScale Float?   // 自动添加转发端点时的流量倍率
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+  
+  // 多租户：所属租户（null=平台）
+  tenantId         Int?
+  tenant           Tenant?  @relation(fields: [tenantId], references: [id])
+
+  @@index([name])
+  @@index([tokenId])
+  @@index([tenantId])
+}
+
+model ForwardChain {
+  id          Int      @id @default(autoincrement())
+  name        String   @unique  // 转发链名称（唯一）
+  displayName String   // 转发链显示名称
+  description String?  // 转发链描述
+  groupIds    Int[]    // 转发端点组ID数组（有序）
+  isEnabled   Boolean  @default(true) // 是否启用
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // 多租户：所属租户（null=平台）。创建后不可变。
+  tenantId    Int?
+  tenant      Tenant?  @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+
+  @@index([name])
+  @@index([isEnabled])
+  @@index([tenantId])
+}
+
+model ServerGroup {
+  id               Int               @id @default(autoincrement())
+  name             String            @unique  // 服务器组名称（唯一）
+  displayName      String            // 服务器组显示名称
+  description      String?           // 服务器组描述
+  tokenId          String?           // legacy plaintext enrollment bearer; NULL after seal/rotate/revoke
+  // P0-B group enrollment credential (envelope)
+  enrollmentLookup     String?   @unique // sha256 hex of bearer
+  enrollmentSecretEnc  String?           // enc1... AAD=group_srv|{id}
+  enrollmentEnabled    Boolean   @default(true)
+  enrollmentCreatedAt  DateTime?
+  enrollmentRotatedAt  DateTime?
+  enrollmentRevokedAt  DateTime?
+  enrollmentLastUsedAt DateTime?
+  ingressAddress   String?           // 服务器组入口地址 ip地址或者域名
+  portStart        Int?
+  portEnd          Int?
+  
+  // 自动添加控制字段
+  allowAutoAdd         Boolean  @default(false)  // 是否允许自动添加服务器
+  autoAddAllowForward  Boolean  @default(true)   // 自动添加服务器时是否允许转发
+  autoAddAllowLatencyTest Boolean @default(false) // 自动添加服务器时是否允许延迟测试
+  autoAddTrafficScale  Float?   @default(1.0)    // 自动添加服务器时的流量倍率
+  autoAddAllowIpNum    Int?                      // 自动添加服务器时的IP数量限制
+  autoAddAllowConnNum  Int?                      // 自动添加服务器时的连接数限制
+  autoAddProtocolFilters String[] @default([])   // 自动添加服务器时的协议过滤器
+  autoAddBandwidth     Int?                      // 自动添加服务器时的带宽限制
+  autoAddUpBandwidth   Int?                      // 自动添加服务器时的上行带宽限制
+  autoAddDownBandwidth Int?                      // 自动添加服务器时的下行带宽限制
+  autoAddBwLimitType   BwLimitType?              // 自动添加服务器时的带宽限制类型
+  autoAddEnableFwdChainMode Boolean?             // 自动添加是否允许使用转发链
+  autoAddForceUsingFwd      Boolean?             // 自动添加是否强制必须使用转发端点
+  autoAddAllowInboundProxy  Boolean  @default(false) // 自动添加服务器时是否允许入站代理
+
+  // 入站协议策略(实时组策略，成员服务器 Inherit 时继承)
+  allowedInboundProtocols String[] @default([])    // 组入站协议白名单：空=放开全部7种；非空=白名单
+  forceInboundProxy       Boolean  @default(false)  // 组强制入站代理：禁止裸转发端口
+
+  // DNS 自动切换配置
+  dnsAutoSwitchEnabled      Boolean  @default(false)       // 总开关
+  dnsObserveOnly            Boolean  @default(true)        // 观测模式(只记日志不执行DNS变更)
+  dnsApiConfigId            Int?                            // 关联的DnsApiConfig ID
+  dnsZoneId                 String?                         // DNS zone ID
+  dnsRecordTtl              Int?     @default(60)           // DNS记录TTL(秒)
+  dnsMinServers             Int?     @default(1)            // DNS中最少保留的IP数量
+  // 健康判定 - 延迟监控维度
+  dnsPacketLossThreshold    Int?     @default(50)           // 单个目标丢包率阈值(0-100)
+  dnsLatencyThresholdMs     Int?                            // 单个目标延迟阈值(毫秒,可选)
+  // 健康判定 - 连接映射维度
+  dnsFwdFailRateThreshold   Int?     @default(50)           // 单个转发端点失败率阈值(0-100)
+  // 健康判定 - "多数不健康"配置
+  dnsBadTargetRatioThreshold Int?    @default(60)           // 不健康目标占比阈值(0-100),超过此比例才判定整机降级
+  dnsMinSampleCount         Int?     @default(2)            // 最少需要的监测目标/转发端点数量,低于此数量不做判定
+  dnsMetricsMaxAgeSec       Int?     @default(600)          // 指标最大有效期(秒),超过则视为过期数据不参与判定
+  // 离线宽限
+  dnsOfflineGraceSec        Int?     @default(300)          // worker离线后等待的宽限时间(秒),之后才开始降级计数
+  // 稳定性确认
+  dnsCheckIntervalSec       Int?     @default(120)          // 检查间隔(秒)
+  dnsRemovalConfirmCount    Int?     @default(3)            // 连续N次不健康才移除
+  dnsRecoveryConfirmCount   Int?     @default(3)            // 连续N次健康才恢复
+  dnsCooldownSec            Int?     @default(300)          // 同一IP变更冷却时间(秒)
+
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+  
+  // 关联的服务器
+  servers          OutboundEndpoint[]
+  // DDNS claim 反向（GroupAutoSwitch 占用）
+  dnsClaims        DnsRecordClaim[]
+
+  // 多租户：所属租户（null=平台）
+  tenantId         Int?
+  tenant           Tenant?  @relation(fields: [tenantId], references: [id])
+
+  @@index([name])
+  @@index([tokenId])
+  @@index([tenantId])
+}
+
+model PaymentMethod {
+  id            Int         @id @default(autoincrement())
+  name          String      // 用户自定义名称，如"主要支付宝通道"
+  displayName   String      // 显示名称
+  type          PaymentType // 支付类型枚举（如 EPAY EPUSDT
+  apiUrl        String      // API地址
+  merchantId    String      // 商户ID/PID
+  merchantKey   String      // 商户密钥（应加密存储）
+  feeRate       Int?        // 费率 x% cents 比如 105 标识 1.05% 费率
+  notifyUrl     String?     // 异步通知地址
+  returnUrl     String?     // 跳转通知地址
+  isEnabled     Boolean     @default(true) // 是否启用
+  sortOrder     Int         @default(0) // 排序顺序
+  network       UsdtNetwork?  // 加密货币网络
+  description   String?     // 描述说明
+  isSystem      Boolean     @default(false) // 是否为系统管理的支付方式（如余额支付）
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+
+  // 关联的支付记录
+  payments      Payment[]
+
+  @@index([type])
+  @@index([isEnabled])
+  @@index([sortOrder])
+  @@index([isSystem])
+}
+
+enum UsdtNetwork {
+  USDTTrc20
+  USDTPolygon
+}
+
+enum PaymentType {
+  EPAY     // 易支付
+  ZPAY     // Z支付
+  EPUSDT   // 加密货币
+  BALANCE  // 余额支付
+}
+
+enum OrderType {
+  SUBSCRIPTION_RENEWAL        // 订阅续费
+  SUBSCRIPTION_PURCHASE       // 订阅购买
+  TRAFFIC_RESET              // 流量重置
+  TRAFFIC_TOPUP              // 流量包补充（用完自动买流量包）
+  BALANCE_RECHARGE           // 余额充值
+  REDEEM_CODE_RECHARGE       // 兑换码充值
+  SUBSCRIPTION_EXTEND        // 兑换码延长订阅时长（0 元订单，不计入收入）
+  BALANCE_REFUND             // 余额退款
+  ADMIN_BALANCE_ADJUSTMENT   // 管理员余额调整
+}
+
+enum OrderStatus {
+  PENDING     // 待支付
+  COMPLETED   // 已完成
+  CANCELLED   // 已取消/关闭
+}
+
+enum PaymentStatus {
+  PENDING     // 待支付
+  PROCESSING  // 处理中
+  COMPLETED   // 已完成
+  FAILED      // 失败
+  CANCELLED   // 已取消
+}
+
+enum RedeemCodeType {
+  BALANCE_RECHARGE     // 余额充值类型
+  PACKAGE_REDEEM       // 套餐兑换类型
+  SUBSCRIPTION_EXTEND  // 延长订阅时长类型
+}
+
+enum RedeemCodeStatus {
+  ACTIVE     // 可用
+  USED       // 已使用
+  EXPIRED    // 已过期
+  DISABLED   // 已禁用
+}
+
+model Order {
+  id                Int           @id @default(autoincrement())
+  orderNumber       String        @unique // 订单号，用于对外显示
+  type              OrderType     // 订单类型
+  status            OrderStatus   @default(PENDING) // 订单状态
+
+  // 用户关联
+  subscriptionId    Int           // 关联的订阅用户
+  subscription      Subscription  @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+
+  // 订单金额
+  amount            Int           // 订单金额（分）
+  currency          String        @default("CNY") // 货币类型
+
+  // 关联的套餐或订阅信息
+  packageId         Int?          // 关联的套餐ID（购买新订阅时）
+  package           Package?      @relation(fields: [packageId], references: [id])
+  renewalDays       Int?          // 续费天数（续费订阅时）
+  renewalPeriodUnit  Int?          // 续费周期单位快照: 0=DAY, 1=MONTH, 2=QUARTER, 3=YEAR
+  renewalPeriodCount Int?          // 续费周期数值快照
+
+  // 扩展订单字段
+  trafficResetAmount BigInt?       // 流量重置量（字节）
+  extensionDays     Int?          // 延期天数（延期订阅时）
+  originalAmount    Int?          // 原始金额（分，支持优惠场景）
+  discountAmount    Int?          // 优惠金额（分）
+
+  // 兑换码相关字段
+  redeemCodeId      Int?          // 关联的兑换码ID
+  redeemCode        RedeemCode?   @relation(fields: [redeemCodeId], references: [id])
+
+  // 退款关联（唯一约束：每个原始订单最多一笔退款，数据库兜底防并发双退）
+  relatedOrderId    Int?          @unique // 退款订单指向原始充值订单
+  relatedOrder      Order?        @relation("OrderRefund", fields: [relatedOrderId], references: [id])
+  refundOrders      Order[]       @relation("OrderRefund")
+
+  // 管理员备注
+  adminNote         String?       // 管理员操作原因/备注
+
+  // 订单描述
+  title             String        // 订单标题
+  description       String?       // 订单描述
+
+  // 时间戳
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+  completedAt       DateTime?     // 完成时间
+
+  // 关联的支付记录
+  payments          Payment[]
+
+  // 多租户：创建时快照购买者的租界（null=平台）
+  tenantId          Int?
+  tenant            Tenant?       @relation(fields: [tenantId], references: [id])
+
+  @@index([subscriptionId])
+  @@index([status])
+  @@index([type])
+  @@index([createdAt])
+  @@index([orderNumber])
+  @@index([packageId])
+  @@index([redeemCodeId])
+  @@index([tenantId])
+}
+
+model Payment {
+  id                Int           @id @default(autoincrement())
+  paymentNumber     String        @unique // 支付流水号
+
+  // 关联订单
+  orderId           Int           // 关联的订单ID
+  order             Order         @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  // 支付信息
+  amount            Int           // 支付金额（分）
+  currency          String        @default("CNY") // 货币类型
+  status            PaymentStatus @default(PENDING) // 支付状态
+  payUrl            String?       // 支付链接
+  transactionData   String?       // 支付请求返回的数据
+
+  // 支付方式信息
+  paymentMethodId   Int?          // 使用的支付方式ID
+  paymentMethod     PaymentMethod? @relation(fields: [paymentMethodId], references: [id])
+  paymentType       PaymentType?  // 支付类型
+
+  // 第三方支付信息
+  externalOrderId   String?       // 第三方支付订单ID
+  externalTradeNo   String?       // 第三方交易号
+  callbackData      String?       // 支付回调数据（JSON格式）
+
+  // 时间戳
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+  paidAt            DateTime?     // 支付完成时间
+
+  @@index([orderId])
+  @@index([status])
+  @@index([paymentMethodId])
+  @@index([externalOrderId])
+  @@index([externalTradeNo])
+  @@index([createdAt])
+}
+
+model RedeemCode {
+  id                Int               @id @default(autoincrement())
+  code              String            @unique // 兑换码
+  type              RedeemCodeType    // 兑换码类型
+  status            RedeemCodeStatus  @default(ACTIVE)
+  
+  // 兑换码价值
+  value             Int               // 价值金额（分）
+  currency          String            @default("CNY")
+  
+  // 套餐兑换相关
+  packageId         Int?              // 关联的套餐ID（套餐兑换类型时使用）
+  package           Package?          @relation(fields: [packageId], references: [id])
+
+  // 延长订阅相关
+  extensionDays     Int?              // 延长天数（仅 SUBSCRIPTION_EXTEND 类型使用）
+
+  // 使用信息
+  usedBy            Int?              // 使用者订阅ID
+  usedAt            DateTime?         // 使用时间
+  user              Subscription?     @relation(fields: [usedBy], references: [id])
+  
+  // 有效期
+  validFrom         DateTime          @default(now())
+  validUntil        DateTime?         // 过期时间（可选）
+  
+  // 创建信息
+  createdBy         Int?              // 创建者（管理员）
+  batchId           String?           // 批次ID（用于批量生成）
+  description       String?           // 描述
+  
+  // 关联的订单
+  orders            Order[]
+
+  // 多租户：所属租户（null=平台）。兑换校验要求 code.tenantId == user.tenantId
+  tenantId          Int?
+  tenant            Tenant?           @relation(fields: [tenantId], references: [id])
+
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+  
+  @@index([code])
+  @@index([type])
+  @@index([status])
+  @@index([usedBy])
+  @@index([batchId])
+  @@index([validUntil])
+  @@index([packageId])
+  @@index([tenantId])
+}
+
+
+
+enum AlertSeverity {
+  Info
+  Warn
+  Critical
+}
+
+enum AlertStatus {
+  Active
+  AutoResolved
+  ManualResolved
+  Ignored
+  /// 点事件：一次写入的历史行，不进 Active，resolved_at 落创建时刻
+  PointEvent
+}
+
+enum AlertResourceType {
+  System
+  Subscription
+  OutboundEndpoint
+  ServerGroup
+  ForwardEndpoint
+  ForwarderEndpointGroup
+  Port
+  ForwardChain
+  SslCertificate
+}
+
+enum AlertReason {
+  ServerDown
+  ServerHighLatency
+  PortAbnormal
+  TrafficExceeded
+  BalanceLow
+  LicenseExpiring
+  PaymentFailed
+  SystemError
+  FwdDown
+  HttpConfigAbnormal
+  FwdAuthFailure
+  PortAutoDeleted
+  Custom
+  SslCertIssueFailed
+  SslCertRenewFailed
+  SslCertExpiring
+  DnsAutoSwitchFailed      // DNS更新操作失败
+  DnsServerRemoved         // 服务器IP被自动从DNS移除
+  CpuHighLoad              // CPU持续高负载
+  MemoryHighUsage          // 内存持续高使用率
+  DiskSpaceLow             // 磁盘空间不足
+  ConnectionCountHigh      // 连接数过高
+  IngressIpChanged         // 服务器入口 IP 变更（点事件）
+  DdnsUpdateFailed         // DDNS 记录更新失败（状态型告警）
+  ProcessCrash             // 进程 panic / OOM（点事件；details.kind 区分）
+  ControlPlaneNetworkAbnormal       // 控制面自身外网异常：TCP 连通 / DNS 解析（状态型）
+  ControlPlaneDependencyUnreachable // 控制面关键依赖不可达：TG API / auth server 等（状态型）
+}
+
+model Alert {
+  id               Int               @id @default(autoincrement())
+  message          String?
+  reason           AlertReason
+  severity         AlertSeverity     @default(Warn)
+
+  // 资源归属（多态引用：类型 + id）
+  resourceType     AlertResourceType
+  resourceId       Int?
+  resourceName     String?
+  subscriptionId Int? // belong to which subscription user
+  subscription   Subscription? @relation(fields: [subscriptionId], references: [id])
+
+  // 租界历史快照裸列（null=平台）。无 @relation/无 FK（同 AuditLog 手法）。
+  // 租户删除后历史告警保留且 tenantId 可悬空；不入 TenantBlockers、不 Cascade。
+  // 写入点：alert_model::trigger()/auto_process() 按 (resourceType, reason) 矩阵解析一次落库。
+  tenantId         Int?
+
+  // 去重键：同一资源+原因，应计算出稳定 dedupKey
+  dedupKey         String
+  isOpen           Boolean           @default(true)
+  status           AlertStatus       @default(Active)
+
+  occurrenceCount  Int               @default(1)
+  firstOccurredAt  DateTime          @default(now())
+  lastOccurredAt   DateTime          @default(now())
+
+  // 确认与关闭
+  resolvedAt       DateTime?
+
+  // 扩展
+  details          String?           // 建议放 JSON 字符串，便于自定义结构
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+
+  // ---- 双槽投递 pending（§6.4 / §6.5；R4-P1-5）----
+  // Raised 与 Resolved 各一组固定列，互不覆盖。PointEvent 只写 Raised 槽。
+  // 清理 CAS 必须带对应槽 eventId，防旧 scanner 误清新事件。
+  // snapshotJson：该阶段不可变 payload（防 E1 未扫即 E2 时用当前行冒充 Raised）。
+  raisedEventId         String?
+  raisedTgPending       Boolean          @default(false)
+  raisedEmailPending    Boolean          @default(false)
+  raisedSnapshotJson    String?
+  // 有界投递状态（ops-email-delivery-bounded-resurrection v12 §3）
+  // attempts=纯预算；epoch=纯 fencing（admission 无条件+1、永不回退）
+  raisedEmailAttempts       Int       @default(0)
+  raisedEmailEpoch          Int       @default(0)
+  raisedEmailNextAt         DateTime?
+  raisedEmailFailedTo       String?   // JSON 数组：NULL=未试；"[]"=全成功；非空=失败子集
+  raisedEmailStateEventId   String?   // attempts/nextAt/failedTo 归属事件；失配=换代
+  resolvedEventId       String?
+  resolvedTgPending     Boolean          @default(false)
+  resolvedEmailPending  Boolean          @default(false)
+  resolvedSnapshotJson  String?
+  resolvedEmailAttempts       Int       @default(0)
+  resolvedEmailEpoch          Int       @default(0)
+  resolvedEmailNextAt         DateTime?
+  resolvedEmailFailedTo       String?
+  resolvedEmailStateEventId   String?
+
+  @@index(subscriptionId)
+  @@index([status])
+  @@index([resourceType, resourceId])
+  @@index([reason])
+  @@index([createdAt])
+  @@index([tenantId])
+}
+
+enum ForwarderTaskStatus {
+  Pending
+  InProgress
+  Completed
+  Failed
+  Timeout
+}
+
+model ForwarderTask {
+  id                   Int                 @id @default(autoincrement())
+  forwardEndpointId    Int                 // 关联的转发端点ID
+  forwardEndpoint      ForwardEndpoint     @relation(fields: [forwardEndpointId], references: [id], onDelete: Cascade)
+  
+  // 任务内容和配置
+  taskJson             String              // 任务内容JSON字符串
+  taskType             String              // 任务类型标识
+  priority             Int                 @default(0) // 任务优先级，数字越大优先级越高
+  dedupKey             String              // 去重ID
+  
+  // 任务状态和时间
+  status               ForwarderTaskStatus @default(Pending)
+  createdAt            DateTime            @default(now())
+  updatedAt            DateTime            @updatedAt
+  timeoutAt            DateTime?           // 任务超时时间
+  startedAt            DateTime?           // 任务开始执行时间
+  completedAt          DateTime?           // 任务完成时间
+  
+  // 执行结果
+  result               String?             // 任务执行结果JSON字符串
+  errorMessage         String?             // 错误信息
+  retryCount           Int                 @default(0) // 重试次数
+  maxRetries           Int                 @default(3) // 最大重试次数
+  
+  @@index([forwardEndpointId])
+  @@index([status])
+  @@index([priority, createdAt])
+  @@index([timeoutAt])
+  @@index([taskType])
+  @@index([forwardEndpointId, status])
+}
+
+model PeerStatistic {
+  id                Int      @id @default(autoincrement())
+  peerPairJson      String   // JSON 序列化的 PeerPair 数据
+  statisticJson     String   // JSON 序列化的 TargetStatistic 数据
+  lastUpdateTime    DateTime @updatedAt
+  createdAt         DateTime @default(now())
+  
+  @@unique([peerPairJson])
+  @@index([lastUpdateTime])
+}
+
+model NatTraversal {
+    id                Int      @id @default(autoincrement())
+    serverId Int
+    clientId Int
+    publicPort Int
+    natPublicPort Int
+    natBindPort Int
+    token    String   @unique
+    target   String
+    listenAddress     String?  // 监听地址，可选字段，默认为null表示使用UNSPECIFIED
+    lastUpdateTime    DateTime @updatedAt
+    createdAt         DateTime @default(now())
+
+    // 多租户：所属租户（null=平台）。必须直接列（serverId/clientId 无 @relation）。
+    tenantId          Int?
+    tenant            Tenant?  @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+
+    @@index([serverId, clientId])
+    @@index([tenantId])
+}
+
+model WgNetwork {
+    id               Int       @id @default(autoincrement())
+    name             String
+    displayName      String    @default("")
+    addressRange     String    // CIDR, e.g. "10.10.0.0/24"
+    listenPort       Int       @default(51820)
+    serverPrivateKey String    // gateway x25519 private key, base64
+    serverPublicKey  String    // gateway corresponding public key, base64
+    dns              String?   // e.g. "1.1.1.1,8.8.8.8"
+    mtu              Int?      @default(1380)
+    gatewayServerId  Int       @map("serverId") // FK to OutboundEndpoint, DB column stays "serverId"
+    gatewayEndpoint  String?   // extra WG listen endpoint(s), e.g. "1.2.3.4:51820", comma-separated
+    hammerListenPort Int?      // Hammer protocol listen port for gateway (null=disabled)
+    hammerUotPort    Int?      // Hammer UOT listen port for gateway (null=disabled)
+    hammerPsk        String?   // Hammer PSK for gateway authentication
+    p2pMode          Int       @default(0)      // [reserved] 0=gateway-only, 1=p2p+fallback, 2=p2p-only
+    exitNode         Boolean   @default(false)  // when true, route all traffic (0.0.0.0/0) through gateway
+    excludedCidrs    String?   // comma-separated CIDRs excluded from full-tunnel (private/docker nets); applies to exit-node members
+    enabled          Boolean   @default(true)
+    createdAt        DateTime  @default(now())
+    updatedAt        DateTime  @updatedAt
+    peers            WgPeer[]
+    members          WgMember[]
+
+    // 多租户：WG 归属锚点（null=平台）。子表不加列，经 networkId 归属。
+    tenantId         Int?
+    tenant           Tenant?   @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+
+    @@unique([gatewayServerId, listenPort])
+    @@index([tenantId])
+}
+
+model WgPeer {
+    id                  Int        @id @default(autoincrement())
+    networkId           Int
+    network             WgNetwork  @relation(fields: [networkId], references: [id], onDelete: Cascade)
+    name                String     // device name, e.g. "iPhone-Alice"
+    publicKey           String
+    privateKey          String     // stored to generate full client QR config
+    presharedKey        String?
+    assignedIp          String     // e.g. "10.10.0.2/32"
+    allowedIps          String?    // client-side AllowedIPs, defaults to network.addressRange
+    persistentKeepalive Int?       @default(25)
+    exitNode            Boolean    @default(false) // enable full-tunnel exit
+    exitNodeTargetId    Int?       // FK to WgMember used as exit (null=gateway)
+    enabled             Boolean    @default(true)
+    createdAt           DateTime   @default(now())
+    updatedAt           DateTime   @updatedAt
+    directMembers       WgPeerDirectMember[]
+
+    @@unique([networkId, assignedIp])
+    @@unique([networkId, publicKey])
+    @@unique([id, networkId])  // for composite FK from WgPeerDirectMember
+}
+
+model WgMember {
+    id                  Int        @id @default(autoincrement())
+    networkId           Int
+    network             WgNetwork  @relation(fields: [networkId], references: [id], onDelete: Cascade)
+    serverId            Int        // FK to OutboundEndpoint (member worker)
+    name                String     // display label, e.g. "Tokyo-1"
+    publicKey           String
+    privateKey          String     // stored to generate member config
+    presharedKey        String?
+    assignedIp          String     // allocated from same pool as WgPeer
+    // ── P2P Direct Connect (topology layer) ──
+    p2pEnabled          Boolean    @default(false) // [deprecated] kept for migration, use p2pServer/p2pClient
+    p2pServer           Boolean    @default(false) // accept direct connections from other members (topology only)
+    p2pClient           Boolean    @default(false) // actively connect to other P2P-server-enabled members
+    // ── Device Direct Connect ──
+    deviceDirectEnabled Boolean    @default(false) // accept direct WG connections from devices
+    deviceDirectListenPort Int?    // custom WG listen port for device direct (null=auto-assign when enabled)
+    // ── WireGuard Transport ──
+    wgServer            Boolean    @default(false) // provide WireGuard transport endpoint for P2P/relay
+    endpoint            String?    // WireGuard server endpoint (custom override, auto-detected if empty)
+    // ── Exit Node ──
+    exitNode            Boolean    @default(false) // use exit node for internet (full-tunnel, "consume exit")
+    exitNodeCandidate   Boolean    @default(false) // can serve as exit node for others ("provide exit")
+    excludedCidrs       String?    // overrides network-level excluded CIDRs for this member; NULL=inherit network
+    enabled             Boolean    @default(true)
+    // ── Relay ──
+    relayEnabled        Boolean    @default(false) // can this member act as a relay for others
+    autoRelayCandidate  Boolean    @default(false) // allow auto-selection as relay
+    // ── Hammer Transport ──
+    hammerListenPort    Int?       // Hammer protocol listen port (null=disabled)
+    hammerUotPort       Int?       // Hammer UOT listen port (null=disabled)
+    hammerPsk           String?    // Hammer pre-shared key for authentication (null=auto-generated)
+    forceHammer         Boolean    @default(false) // [deprecated] kept for migration, use hammerOnly
+    hammerServer        Boolean    @default(false) // provide Hammer/UOT relay service for other members
+    hammerOnly          Boolean    @default(false) // outbound only uses Hammer/UOT protocols (disables WG_UDP + P2P)
+    createdAt           DateTime   @default(now())
+    updatedAt           DateTime   @updatedAt
+    relayEdgesFrom      WgRelayEdge[] @relation("EdgeFrom")
+    relayEdgesTo        WgRelayEdge[] @relation("EdgeTo")
+    exitTargets         WgExitTarget[] @relation("ExitTargets")
+    exitTargetOf        WgExitTarget[] @relation("ExitTargetOf")
+    directFromPeers     WgPeerDirectMember[]
+
+    @@unique([networkId, serverId])
+    @@unique([networkId, assignedIp])
+    @@unique([networkId, publicKey])
+    @@unique([id, networkId])  // for composite FK from WgRelayEdge
+}
+
+enum WgEdgeProtocol {
+    WG_UDP
+    HAMMER_UDP
+    HAMMER_UOT
+}
+
+/// Same-network enforced at DB level: both composite FKs share the single networkId
+/// column, so fromMember and toMember are guaranteed to belong to the same network.
+model WgRelayEdge {
+    id                Int              @id @default(autoincrement())
+    networkId         Int              // shared by both composite FKs below
+    fromMemberId      Int
+    fromMember        WgMember         @relation("EdgeFrom", fields: [fromMemberId, networkId], references: [id, networkId], onDelete: Cascade)
+    toMemberId        Int
+    toMember          WgMember         @relation("EdgeTo", fields: [toMemberId, networkId], references: [id, networkId], onDelete: Cascade)
+    priority          Int              @default(0)  // lower = higher priority
+    protocol          WgEdgeProtocol   @default(WG_UDP)
+    wgEndpoints       String?          // JSON array override for WG UDP endpoints; null = auto-resolve
+    hammerEndpoints   String?          // JSON array override for Hammer endpoints; null = auto-resolve
+    hammerUotPriority Int?             // UOT priority for HAMMER_UOT edges (lower = prefer UOT)
+    enabled           Boolean          @default(true)
+    createdAt         DateTime         @default(now())
+    updatedAt         DateTime         @updatedAt
+
+    @@unique([fromMemberId, toMemberId, protocol])
+    @@index([fromMemberId])
+    @@index([toMemberId])
+    @@index([networkId])
+}
+
+/// Exit node target: a member selects another member as its exit node (with priority for fallback).
+/// Device-to-Member direct connect mapping.
+/// Same-network enforced via composite FKs sharing the single networkId column.
+model WgPeerDirectMember {
+    id         Int      @id @default(autoincrement())
+    networkId  Int
+    peerId     Int
+    peer       WgPeer   @relation(fields: [peerId, networkId], references: [id, networkId], onDelete: Cascade)
+    memberId   Int
+    member     WgMember @relation(fields: [memberId, networkId], references: [id, networkId], onDelete: Cascade)
+    enabled    Boolean  @default(true)
+    createdAt  DateTime @default(now())
+    updatedAt  DateTime @updatedAt
+
+    @@unique([peerId, memberId])
+    @@index([peerId])
+    @@index([memberId])
+    @@index([networkId])
+}
+
+model WgExitTarget {
+    id              Int       @id @default(autoincrement())
+    networkId       Int
+    memberId        Int
+    member          WgMember  @relation("ExitTargets", fields: [memberId, networkId], references: [id, networkId], onDelete: Cascade)
+    targetMemberId  Int
+    targetMember    WgMember  @relation("ExitTargetOf", fields: [targetMemberId, networkId], references: [id, networkId], onDelete: Cascade)
+    priority        Int       @default(0)  // lower = higher priority
+    enabled         Boolean   @default(true)
+    createdAt       DateTime  @default(now())
+    updatedAt       DateTime  @updatedAt
+
+    @@unique([memberId, targetMemberId])
+    @@index([memberId])
+    @@index([targetMemberId])
+    @@index([networkId])
+}
+
+model DnsApiConfig {
+  id            Int             @id @default(autoincrement())
+  name          String          @unique // 配置名称，用于标识
+  displayName   String          // 显示名称
+  provider      DnsProviderType // DNS厂商类型
+  apiConfig     String          // JSON格式的API配置信息（包含API密钥、端点等）
+  isEnabled     Boolean         @default(true) // 是否启用
+  description   String?         // 描述信息
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+  sslCertificates  SslCertificate[] // reverse relation for ref checking on delete
+  ddnsBindings     DdnsBinding[]    // DDNS 绑定引用
+  dnsClaims        DnsRecordClaim[] // claim 执行凭据引用
+
+  @@index([provider])
+  @@index([isEnabled])
+}
+
+model InvitationCode {
+  id            Int           @id @default(autoincrement())
+  code          String        @unique // 邀请码字符串（用户可自定义）
+  maxUses       Int           @default(1) // 最大使用次数
+  usedCount     Int           @default(0) // 已使用次数
+  isEnabled     Boolean       @default(true) // 是否启用
+  expiresAt     DateTime?     // 过期时间（可选）
+  createdBy     Int?          // 创建者（管理员订阅ID）
+  description   String?       // 描述
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  // 关联的使用记录
+  usedBy        InvitationCodeUsage[]
+  
+  @@index([code])
+  @@index([isEnabled])
+  @@index([expiresAt])
+}
+
+model InvitationCodeUsage {
+  id                Int              @id @default(autoincrement())
+  invitationCodeId  Int              // 关联的邀请码ID
+  subscriptionId    Int              // 使用者订阅ID
+  usedAt            DateTime         @default(now()) // 使用时间
+  
+  invitationCode    InvitationCode   @relation(fields: [invitationCodeId], references: [id], onDelete: Cascade)
+  subscription      Subscription     @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+  
+  @@unique([invitationCodeId, subscriptionId]) // 防止同一邀请码被同一用户多次使用
+  @@index([invitationCodeId])
+  @@index([subscriptionId])
+}
+// 解锁服务配置模型
+model UnlockServiceConfig {
+  id               Int      @id @default(autoincrement())
+  name             String   @unique // 服务名称（唯一标识）
+  displayName      String   // 显示名称
+
+  // 脚本配置（二选一）
+  scriptUrl        String?  // 测试脚本URL
+  scriptContent    String?  @db.Text // 直接提供的脚本内容
+
+  // 脚本类型
+  scriptType       UnlockScriptType // python 或 bash
+
+  // 测试配置
+  timeout          Int      @default(30000) // 超时时间（毫秒），默认30秒
+  cacheExpiration  Int      @default(28800000) // 缓存时间（毫秒），默认8小时
+  scriptParams     String[] @default([]) // 脚本参数 (可选)
+
+  // 状态控制
+  isEnabled        Boolean  @default(true)  // 是否启用
+
+  // UI展示字段
+  icon             String?  // 图标URL或名称
+  category         String?  // 分类（如：Streaming, Gaming等）
+  sortOrder        Int      @default(0) // 排序顺序
+
+  // 时间戳
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  // 多租户：所属租户（null=平台）
+  tenantId         Int?
+  tenant           Tenant?  @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+
+  @@index([isEnabled])
+  @@index([category])
+  @@index([sortOrder])
+  @@index([name])
+  @@index([tenantId])
+  @@map("unlock_service_config")
+}
+
+// 解锁脚本类型枚举
+enum UnlockScriptType {
+  PYTHON
+  BASH
+}
+
+// ========== 分流管理系统 ==========
+
+enum TrafficMatchType {
+  DOMAIN_EXACT      // 精确域名匹配
+  DOMAIN_SUFFIX     // 域名后缀匹配
+  DOMAIN_KEYWORD    // 域名关键词匹配
+  DOMAIN_REGEX      // 域名正则匹配
+  IP_CIDR           // IP/CIDR匹配
+  GEOIP             // GeoIP国家/地区匹配
+  COMPOSITE         // 组合匹配（支持AND/OR/NOT逻辑）
+  RULE_FILE         // 导入规则文件
+  // 来源匹配类型
+  SOURCE_IP_CIDR    // 来源IP CIDR匹配
+  SOURCE_PORT       // 来源端口精确匹配
+  SOURCE_PORT_RANGE // 来源端口范围匹配
+  SOURCE_GEOIP      // 来源地理位置匹配
+  // 协议匹配
+  PROTOCOL          // 协议匹配（TCP/UDP）
+  // 目标端口匹配
+  DESTINATION_PORT       // 目标端口精确匹配
+  DESTINATION_PORT_RANGE // 目标端口范围匹配
+  // ASN匹配
+  ASN                    // ASN自治系统号匹配（目标IP）
+  SOURCE_ASN             // 来源ASN自治系统号匹配
+}
+
+enum RuleFileType {
+  CLASH            // Clash规则格式
+  SURGE            // Surge规则格式
+  QUANTUMULT_X     // Quantumult X规则格式
+  CUSTOM           // 自定义格式
+}
+
+enum DefaultAction {
+  AUTO              // 自动（跟随默认策略）
+  REJECT            // 拒绝
+  USE_SELECTOR      // 使用指定选择器
+}
+
+model TrafficMatchRule {
+  id               Int      @id @default(autoincrement())
+  name             String   @unique          // 规则名称（唯一标识）
+  displayName      String                    // 显示名称
+  description      String?                   // 规则描述
+
+  // 匹配类型和内容
+  matchType        TrafficMatchType          // 匹配类型
+  matchContent     String   @db.Text         // 匹配内容（JSON格式，存储具体匹配规则）
+
+  // 导入的规则文件
+  ruleFileUrl      String?                   // 外部规则文件URL
+  ruleFileContent  String?  @db.Text         // 规则文件内容缓存
+  ruleFileType     RuleFileType?             // 规则文件类型（Clash、Surge等）
+  ruleFileUpdatedAt DateTime?                // 规则文件最后更新时间
+
+  // 权限控制
+  isPublic         Boolean  @default(false)  // 是否公开（所有用户可用）
+  ownerId          Int?                      // 所有者订阅ID（私有规则）
+  owner            Subscription? @relation("TrafficMatchRuleOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+
+  // 启用状态
+  isEnabled        Boolean  @default(true)
+
+  // 使用统计
+  usageCount       Int      @default(0)      // 被引用次数
+
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  // 关联的分流规则
+  trafficRules     TrafficRule[]
+
+  // 关联的防火墙规则（reuse of TrafficMatchRule for source-side matching)
+  firewallRules    FirewallRule[]
+
+  // 多租户：所属租户（null=平台）。ownerId 语义不变（创建者账号）。
+  tenantId         Int?
+  tenant           Tenant?  @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+
+  @@index([ownerId])
+  @@index([isPublic])
+  @@index([isEnabled])
+  @@index([matchType])
+  @@index([name])
+  @@index([tenantId])
+}
+
+model TrafficOutboundSelector {
+  id               Int      @id @default(autoincrement())
+  name             String   @unique          // 选择器名称
+  displayName      String                    // 显示名称
+  description      String?                   // 描述
+
+  // 选择策略（有序，支持fallback）
+  selectorChain    String   @db.Text         // JSON数组，存储选择器链
+
+  // 权限控制
+  isPublic         Boolean  @default(false)
+  ownerId          Int?
+  owner            Subscription? @relation("TrafficOutboundSelectorOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+
+  // 启用状态
+  isEnabled        Boolean  @default(true)
+
+  // 使用统计
+  usageCount       Int      @default(0)
+
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  // 关联的分流规则
+  trafficRules     TrafficRule[]
+
+  // 作为默认选择器的规则集
+  defaultForRuleSets TrafficRuleSet[]
+
+  // 多租户：所属租户（null=平台）
+  tenantId         Int?
+  tenant           Tenant?  @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+
+  @@index([ownerId])
+  @@index([isPublic])
+  @@index([isEnabled])
+  @@index([name])
+  @@index([tenantId])
+}
+
+model TrafficRule {
+  id                        Int      @id @default(autoincrement())
+  name                      String   @unique
+  displayName               String
+  description               String?
+
+  // 关联匹配规则和出口选择器
+  matchRuleId               Int
+  matchRule                 TrafficMatchRule @relation(fields: [matchRuleId], references: [id], onDelete: Cascade)
+
+  outboundSelectorId        Int
+  outboundSelector          TrafficOutboundSelector @relation(fields: [outboundSelectorId], references: [id], onDelete: Cascade)
+
+  // 权限控制
+  isPublic                  Boolean  @default(false)
+  ownerId                   Int?
+  owner                     Subscription? @relation("TrafficRuleOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+
+  // 启用状态
+  isEnabled                 Boolean  @default(true)
+
+  // 使用统计
+  usageCount                Int      @default(0)
+
+  createdAt                 DateTime @default(now())
+  updatedAt                 DateTime @updatedAt
+
+  // 关联的规则集
+  ruleSetRules              TrafficRuleSetRule[]
+
+  // 多租户：所属租户（null=平台）
+  tenantId                  Int?
+  tenant                    Tenant?  @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+
+  @@index([matchRuleId])
+  @@index([outboundSelectorId])
+  @@index([ownerId])
+  @@index([isPublic])
+  @@index([isEnabled])
+  @@index([name])
+  @@index([tenantId])
+}
+
+model TrafficRuleSet {
+  id                Int      @id @default(autoincrement())
+  name              String   @unique
+  displayName       String
+  description       String?
+
+  // 权限控制
+  isPublic          Boolean  @default(false)
+  ownerId           Int?
+  owner             Subscription? @relation("TrafficRuleSetOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+
+  // 启用状态
+  isEnabled         Boolean  @default(true)
+
+  // 默认行为（当所有规则都不匹配时）
+  defaultAction     DefaultAction @default(AUTO)
+  defaultSelectorId Int?  // 当defaultAction=USE_SELECTOR时使用
+  defaultSelector   TrafficOutboundSelector? @relation(fields: [defaultSelectorId], references: [id], onDelete: SetNull)
+
+  // 使用统计
+  usageCount        Int      @default(0)
+
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  // 关联的规则（多对多）
+  ruleSetRules      TrafficRuleSetRule[]
+
+  // 被哪些端口使用
+  ports             Port[]   @relation("PortTrafficRuleSet")
+
+  // 多租户：所属租户（null=平台）
+  tenantId          Int?
+  tenant            Tenant?  @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+
+  @@index([ownerId])
+  @@index([isPublic])
+  @@index([isEnabled])
+  @@index([name])
+  @@index([tenantId])
+}
+
+model TrafficRuleSetRule {
+  id            Int      @id @default(autoincrement())
+  ruleSetId     Int
+  ruleSet       TrafficRuleSet @relation(fields: [ruleSetId], references: [id], onDelete: Cascade)
+
+  ruleId        Int
+  rule          TrafficRule @relation(fields: [ruleId], references: [id], onDelete: Cascade)
+
+  // 规则优先级（数字越小优先级越高）
+  priority      Int      @default(0)
+
+  createdAt     DateTime @default(now())
+
+  @@unique([ruleSetId, ruleId])
+  @@unique([ruleSetId, priority])
+  @@index([ruleSetId])
+  @@index([ruleId])
+  @@index([priority])
+}
+
+// ========== Firewall (server-inbound-firewall-design rev 4) ==========
+
+enum FirewallAction {
+  ALLOW
+  REJECT
+}
+
+enum FirewallDirection {
+  INBOUND
+  OUTBOUND
+}
+
+model FirewallRule {
+  id            Int      @id @default(autoincrement())
+  name          String   @unique
+  displayName   String
+  description   String?
+
+  // Reuse TrafficMatchRule for the match condition shape — same UI, same
+  // Clash/Surge import path, same usage counters. Restrict so we don't
+  // silently delete a match rule that a firewall still references.
+  matchRuleId   Int
+  matchRule     TrafficMatchRule @relation(fields: [matchRuleId], references: [id], onDelete: Restrict)
+
+  action        FirewallAction
+  // Lower = earlier evaluation. Mirrors RoutingRule.priority semantics.
+  priority      Int      @default(100)
+
+  isPublic      Boolean  @default(false)
+  ownerId       Int?
+  owner         Subscription? @relation("FirewallRuleOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+
+  isEnabled     Boolean  @default(true)
+  usageCount    Int      @default(0)
+
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  ruleSetRules  FirewallRuleSetRule[]
+
+  // 多租户：所属租户（null=平台）
+  tenantId      Int?
+  tenant        Tenant?  @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+
+  @@index([matchRuleId])
+  @@index([ownerId])
+  @@index([isPublic])
+  @@index([action])
+  @@index([tenantId])
+}
+
+model FirewallRuleSet {
+  id            Int      @id @default(autoincrement())
+  name          String   @unique
+  displayName   String
+  description   String?
+
+  direction     FirewallDirection
+  // Falls through here when no rule matches. ALLOW = no-op on empty,
+  // REJECT = deny-all on empty (load-bearing — see design §5.1.1).
+  defaultAction FirewallAction    @default(ALLOW)
+
+  isPublic      Boolean  @default(false)
+  ownerId       Int?
+  owner         Subscription? @relation("FirewallRuleSetOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+
+  isEnabled     Boolean  @default(true)
+
+  // Honeypot probe capture (INBOUND rule sets only). When enabled, a connection
+  // REJECTED by this rule set is NOT dropped immediately — the worker holds the
+  // socket, captures up to `probeCaptureMaxBytes` of what the peer sends plus the
+  // connection duration, then closes. By default it closes as soon as it has the
+  // bytes / the peer EOFs; `probeCaptureLingerEnabled` makes it hold the conn
+  // (reading+discarding) until the peer disconnects or `probeCaptureMaxDurationSecs`
+  // (resource guard / tarpit duration). Default off.
+  probeCaptureEnabled         Boolean @default(false)
+  probeCaptureMaxBytes        Int     @default(4096)
+  probeCaptureMaxDurationSecs Int     @default(60)
+  probeCaptureLingerEnabled   Boolean @default(false)
+
+  usageCount    Int      @default(0)
+
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  ruleSetRules      FirewallRuleSetRule[]
+
+  inboundOnServers  OutboundEndpoint[] @relation("ServerInboundFirewall")
+  outboundOnServers OutboundEndpoint[] @relation("ServerOutboundFirewall")
+  inboundOnPorts    Port[]             @relation("PortInboundFirewall")
+  inboundOnForwarders ForwardEndpoint[] @relation("ForwarderInboundFirewall")
+  subFetchSubscriptions Subscription[] @relation("SubFetchFirewall")
+  defaultInboundOnPackages Package[] @relation("PackageDefaultInboundFirewall")
+  defaultInboundOnSubscriptions Subscription[] @relation("SubscriptionDefaultInboundFirewall")
+
+  // 多租户：所属租户（null=平台）
+  tenantId      Int?
+  tenant        Tenant?  @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+
+  @@index([direction])
+  @@index([ownerId])
+  @@index([isPublic])
+  @@index([isEnabled])
+  @@index([name])
+  @@index([tenantId])
+}
+
+model FirewallRuleSetRule {
+  id          Int @id @default(autoincrement())
+  ruleSetId   Int
+  ruleSet     FirewallRuleSet @relation(fields: [ruleSetId], references: [id], onDelete: Cascade)
+  ruleId      Int
+  rule        FirewallRule    @relation(fields: [ruleId], references: [id], onDelete: Cascade)
+
+  // Per-membership priority override. NULL → use FirewallRule.priority.
+  priority    Int?
+
+  createdAt   DateTime @default(now())
+
+  @@unique([ruleSetId, ruleId])
+  @@index([ruleSetId])
+  @@index([ruleId])
+  @@index([priority])
+}
+
+// ========== 公告系统 ==========
+
+enum AnnouncementContentType {
+  MARKDOWN
+  HTML
+}
+
+model Announcement {
+  id              Int                     @id @default(autoincrement())
+  title           String                  // 公告标题
+  content         String                  @db.Text // 公告内容
+  contentType     AnnouncementContentType // 内容格式类型
+
+  isVisible       Boolean                 @default(true) // 是否用户可见
+  isPinned        Boolean                 @default(false) // 是否置顶
+  sortOrder       Int                     @default(0) // 排序顺序(数字越小越靠前)
+
+  // 有效期控制
+  effectiveAt     DateTime                @default(now()) // 生效时间
+  expiresAt       DateTime?               // 过期时间(null表示永不过期)
+
+  // 创建信息
+  createdBy       Int?                    // 创建者(管理员订阅ID)
+
+  // 多租户：null=平台公告；非 null 仅本租户用户可见
+  tenantId        Int?
+  tenant          Tenant?                 @relation(fields: [tenantId], references: [id])
+  // 仅平台公告(tenantId=null)有意义：true=下发到各租户用户；false=仅平台侧用户可见。
+  // 租户公告忽略此字段。默认 true 兼容历史 D1「平台公告全员可见」。
+  broadcastToTenants Boolean              @default(true)
+
+  createdAt       DateTime                @default(now())
+  updatedAt       DateTime                @updatedAt
+
+  @@index([isVisible])
+  @@index([isPinned, sortOrder])
+  @@index([effectiveAt])
+  @@index([expiresAt])
+  @@index([tenantId])
+  @@map("announcements")
+}
+
+// ========== API Key 管理 ==========
+
+model ApiKey {
+  id              Int       @id @default(autoincrement())
+  name            String    // API Key 名称/描述
+  description     String?   // 可选的详细描述
+  keyHash         String    @unique // SHA-256 hash of the full key
+  keyPrefix       String    // First 16 chars for UI display
+  prefix          String    @default("zfk") // User-customizable prefix
+  keyRaw          String    @default("") // Stores full API key for later retrieval
+  createdByTokenId String   // The admin token_id who created this key
+  scopes          String[]  @default([]) // Granted ApiKeyScope values (snake_case). Empty = deny-all; ["full"] = wildcard. See zf-web auth::scope.
+  isActive        Boolean   @default(true)
+  expiresAt       DateTime? // Optional expiration
+  lastUsedAt      DateTime? // Track last usage
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@index([keyHash])
+  @@index([createdByTokenId])
+  @@index([isActive])
+}
+
+// ========== Operation Audit Log ==========
+
+enum SslCertSource {
+  MANUAL
+  LETSENCRYPT
+}
+
+enum SslCertStatus {
+  ACTIVE
+  EXPIRED
+  PENDING
+  FAILED
+  REVOKED
+}
+
+model SslCertificate {
+  id              Int             @id @default(autoincrement())
+  name            String          @unique
+  source          SslCertSource
+  status          SslCertStatus   @default(PENDING)
+
+  certPem         String?         // Full chain PEM (null while PENDING)
+  keyPem          String?         // Private key PEM
+
+  // Auto-extracted metadata
+  domains         String[]
+  issuer          String?
+  certType        String?         // "RSA", "ECDSA"
+  keyBits         Int?
+  notBefore       DateTime?
+  notAfter        DateTime?
+  serialNumber    String?
+  certHash        String?         // SHA256 fingerprint of leaf cert DER
+
+  // ACME fields (LETSENCRYPT only)
+  dnsConfigId     Int?
+  dnsConfig       DnsApiConfig?   @relation(fields: [dnsConfigId], references: [id])
+  dnsZoneId       String?
+  autoRenew       Boolean         @default(true)
+  lastRenewalAt   DateTime?
+  renewalError    String?
+  lastAttemptAt   DateTime?       // When last issue/renew was attempted
+
+  // Relation
+  forwardEndpoints ForwardEndpoint[]
+  inboundPorts     Port[]          @relation("PortInboundSslCert")
+
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  @@index([status])
+  @@index([source])
+  @@index([notAfter])
+}
+
+model AcmeAccount {
+  id              Int             @id @default(autoincrement())
+  email           String
+  credentialsJson String          @map("accountKeyPem") // ACME account credentials (instant_acme serialized)
+  accountUrl      String?
+  directoryUrl    String          // "https://acme-v02.api.letsencrypt.org/directory" or staging
+  isActive        Boolean         @default(true)
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  @@index([isActive])
+}
+
+enum AuditAction {
+  Create
+  Update
+  Delete
+  Suspend
+  Resume
+  BatchCreate
+  BatchUpdate
+  BatchDelete
+  Extend
+  Switch
+  RefreshToken
+  PaymentCallback
+  // agent-exec：AI 调试 agent 在 worker/forwarder 实例上执行一次性 shell 命令。
+  Execute
+  // agent-exec：读类操作（如枚举 worker/forwarder 实例清单 = fleet inventory 发现）。
+  Read
+  // RBAC：给管理员挂/摘角色。
+  Assign
+  // RBAC：子管理员越权被拒（403）。
+  AccessDenied
+  // 面板登录会话：登录成功/失败审计。
+  Login
+  // 面板登录会话：撤销会话（自助踢设备 / 管理端踢 / 级联）。
+  RevokeSession
+  // 超管应急通道（N2 例外）：取用租户管理员 token。罕见事件，每次调用独立成行，
+  // 禁止与任何其它行合并/去重——这行本身就是该通道唯一的问责证据。
+  EmergencyAccess
+}
+
+enum AuditResourceType {
+  Port
+  OutboundEndpoint
+  ServerGroup
+  ForwardEndpoint
+  ForwarderEndpointGroup
+  Subscription
+  Package
+  ForwardChain
+  SslCertificate
+  AcmeAccount
+  Payment
+  AdminRole
+  Tenant
+  Session
+  RedeemCode
+  Order
+  Announcement
+  Ticket
+  Referral
+  /// 租户通知策略（TenantNotificationPolicy），勿借用 Subscription。
+  NotificationPolicy
+}
+
+enum AuditOutcome {
+  Success
+  Failed
+  Warning
+  /// 两阶段审计 attempt 态（C14）：已发起、终态未知。不可复用 NULL——NULL 是默认值/历史未标注。
+  Pending
+}
+
+model AuditLog {
+  id              Int               @id @default(autoincrement())
+  actor           String
+  actorName       String?
+  subscriptionId  Int?
+  action          AuditAction
+  resourceType    AuditResourceType
+  resourceId      Int?
+  resourceName    String?
+  description     String
+  requestBody     String?           @db.Text
+  affectedCount   Int?
+  relatedIds      String?
+  outcome         AuditOutcome?
+  /// 目标资源所属租户的**快照**（null = 平台资源）。资源删除后仍可追溯归属。无 FK。
+  tenantId        Int?
+  createdAt       DateTime          @default(now())
+
+  @@index([actor])
+  @@index([subscriptionId])
+  @@index([resourceType, resourceId])
+  @@index([createdAt])
+  @@index([outcome])
+  @@index([tenantId])
+}
+
+// ==================== RBAC 管理员角色 ====================
+
+// 自定义管理员角色：permissions 存 wire 串（如 "servers:read"），语义见 zf-web auth/perm.rs。
+// 超管仍由 Subscription.isAdmin 标识（全权限，不走角色）；红线权限不在 wire 枚举内，天然配不出。
+model AdminRole {
+  id          Int      @id @default(autoincrement())
+  name        String   @unique
+  description String   @default("")
+  permissions String[] @default([])
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  assignments AdminRoleAssignment[]
+}
+
+model AdminRoleAssignment {
+  id             Int          @id @default(autoincrement())
+  subscriptionId Int
+  roleId         Int
+  createdAt      DateTime     @default(now())
+  subscription   Subscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+  role           AdminRole    @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@unique([subscriptionId, roleId])
+  @@index([subscriptionId])
+  @@index([roleId])
+}
+
+// ==================== 推广返利系统 ====================
+
+model ReferralRelationship {
+  id              Int          @id @default(autoincrement())
+  referrerId      Int          // 邀请者 subscription.id
+  referredId      Int          @unique // 被邀请者（唯一，保证单层）
+  referralCode    String       // 使用的推广码快照
+  registrationIp  String?      // 被邀请者注册 IP
+  commissionCount Int          @default(0) // 已产生有效佣金次数（终身累计，跨换绑/清除不重置）
+  isActive        Boolean      @default(true) // false = 管理员已清除推荐关系，保留行承载 commission_count 终身额度
+  createdAt       DateTime     @default(now())
+
+  referrer        Subscription @relation("Referrer", fields: [referrerId], references: [id], onDelete: Cascade)
+  referred        Subscription @relation("Referred", fields: [referredId], references: [id], onDelete: Cascade)
+
+  @@index([referrerId])
+  @@index([referralCode])
+  @@index([registrationIp])
+  @@index([isActive])
+}
+
+// 推广成分：可为不同推广人配置差异化的佣金类型/值/次数上限
+model ReferralCommissionComponent {
+  id                 Int            @id @default(autoincrement())
+  name               String         @unique // 管理员可读标识
+  commissionType     String         // "FIXED" | "PERCENTAGE"
+  commissionValue    Int            // FIXED=分，PERCENTAGE=基点
+  maxCommissionCount Int            // 每被邀请人最多产生佣金的充值次数
+  createdAt          DateTime       @default(now())
+  updatedAt          DateTime       @updatedAt
+
+  subscriptions      Subscription[] @relation("SubscriptionCommissionComponent")
+
+  @@index([name])
+}
+
+enum ReferralCommissionStatus {
+  PENDING
+  CONFIRMED
+  CANCELLED
+  REVERSED       // 已确认佣金被管理员回滚
+}
+
+model ReferralCommission {
+  id               Int                      @id @default(autoincrement())
+  referrerId       Int                      // 获佣者（冗余便于查询）
+  referredId       Int                      // 充值者
+  orderId          Int          @unique     // 触发佣金的充值订单 —— 唯一约束，保证幂等
+  orderAmount      Int                      // 订单实付金额快照（分）
+  commissionAmount Int                      // 佣金金额（分）
+  commissionType   String                   // "FIXED" / "PERCENTAGE"（快照）
+  commissionValue  Int                      // 快照：固定分值 或 百分比基点
+  status           ReferralCommissionStatus @default(PENDING)
+  confirmAt        DateTime                 // 预计确认时间
+  confirmedAt      DateTime?
+  cancelledAt      DateTime?
+  cancelReason     String?
+  reversedDeficit  Int?                     // 回滚时未追回的差额（分），非 null 表示部分回滚
+  createdAt        DateTime                 @default(now())
+  updatedAt        DateTime                 @updatedAt
+
+  referrer         Subscription @relation("CommissionEarner", fields: [referrerId], references: [id], onDelete: Cascade)
+
+  @@index([referrerId, status])
+  @@index([referredId])
+  @@index([status, confirmAt])
+}
+
+enum ReferralTransactionType {
+  COMMISSION_CONFIRMED   // 佣金确认到账
+  COMMISSION_REVERSED    // 已确认佣金被回滚（扣款）
+  TRANSFER_TO_BALANCE    // 转入主余额
+  WITHDRAWAL_REQUEST     // 提现申请（扣款）
+  WITHDRAWAL_APPROVED    // 提现完成
+  WITHDRAWAL_REJECTED    // 提现拒绝（退回）
+  ADMIN_ADJUSTMENT       // 管理员手动调整
+}
+
+model ReferralTransaction {
+  id              Int                     @id @default(autoincrement())
+  subscriptionId  Int
+  type            ReferralTransactionType
+  amount          Int                     // 正数=入账，负数=扣款（分）
+  balanceBefore   Int                     // 变动前余额
+  balanceAfter    Int                     // 变动后余额
+  relatedId       Int?                    // 关联 ReferralCommission.id 或 Ticket.id
+  note            String?
+  createdAt       DateTime                @default(now())
+
+  subscription    Subscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+
+  @@index([subscriptionId, createdAt])
+  @@index([type])
+}
+
+enum ReferralWithdrawalStatus {
+  PENDING    // 用户提交，待管理员处理
+  APPROVED   // 管理员已批准
+  REJECTED   // 管理员已拒绝（余额退回）
+}
+
+model ReferralWithdrawal {
+  id              Int                       @id @default(autoincrement())
+  subscriptionId  Int
+  amount          Int                       // 提现金额（分）
+  status          ReferralWithdrawalStatus  @default(PENDING)
+  adminNote       String?                   // 管理员备注
+  processedAt     DateTime?                 // 处理时间
+  createdAt       DateTime                  @default(now())
+  updatedAt       DateTime                  @updatedAt
+
+  // 提交时收款账户的快照（账户表后续删改不影响历史 / 审核）
+  accountType     WithdrawalAccountType?
+  accountName     String?
+  accountNumber   String?
+  bankName        String?
+
+  subscription    Subscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+
+  @@index([subscriptionId])
+  @@index([status])
+  @@index([createdAt])
+}
+
+enum WithdrawalAccountType {
+  BANK
+  WECHAT
+  ALIPAY
+}
+
+// 用户保存的收款账户：每个 subscription 每种类型最多一条
+model WithdrawalAccount {
+  id             Int                   @id @default(autoincrement())
+  subscriptionId Int
+  accountType    WithdrawalAccountType
+  accountName    String                // 收款人姓名
+  accountNumber  String                // 银行卡号 / 微信号 / 支付宝账号
+  bankName       String?               // 仅 BANK 使用
+  createdAt      DateTime              @default(now())
+  updatedAt      DateTime              @updatedAt
+
+  subscription   Subscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+
+  @@unique([subscriptionId, accountType])
+  @@index([subscriptionId])
+}
+
+// =========================================================================
+// Admin KPI Dashboard snapshot tables
+// 仅追加，不改老表。由 zf-web::dashboard_rollup_service 定时写入。
+// =========================================================================
+
+// ⚠️ Legacy（#595）：分钟级时序快照。读路径已全部迁到 ServerStatusCurrent
+// （概览只需要"最近状态 + 最后在线时间"，31 天分钟行无人消费）。
+// 新代码不再读写本表；0005 hook 回填、0006 hook 清空存量行，表本身待后续版本摘除 model
+// 时由 db push 删除。不要新增读点。
+model ServerStatusSnapshot {
+  id            Int      @id @default(autoincrement())
+  serverId      Int      // OutboundEndpoint.id 弱引用，不加 FK 避免级联
+  bucketAt      DateTime // 对齐到分钟
+  isOnline      Boolean  // Redis server:status:{id} == 1
+  cpuUsage      Float?   // 从 system_stats:{id} 读
+  memoryUsedPct Float?
+  diskUsedPct   Float?   // 从 system_stats:{id} 的 disk_used / disk_total 计算
+  rxBps         BigInt?  // 从 netcard_speed:{id} 读
+  txBps         BigInt?
+  createdAt     DateTime @default(now())
+
+  @@unique([serverId, bucketAt])
+  @@index([bucketAt])
+}
+
+// 服务器当前状态（每台一行，60s UPSERT 覆盖；serverId 既是主键也是幂等键）。
+// `observedAt` = 最近一次成功采样时间：读侧 >5min 视为"状态过期/未知"，而不是离线
+// （Redis / 采集失败不得制造离线事实）。`lastOnlineAt` 只在上报在线时刷新，离线保留
+// 原值，供"离线多久 / 从未在线"展示。
+model ServerStatusCurrent {
+  serverId      Int       @id // OutboundEndpoint.id 弱引用，不加 FK 避免级联
+  isOnline      Boolean // Redis server:status:{id} == 1
+  cpuUsage      Float? // 从 system_stats:{id} 读
+  memoryUsedPct Float?
+  diskUsedPct   Float? // 从 system_stats:{id} 的 disk_used / disk_total 计算
+  rxBps         BigInt? // 从 netcard_speed:{id} 读
+  txBps         BigInt?
+  observedAt    DateTime // 最近一次成功采样时间
+  lastOnlineAt  DateTime? // 最近一次观测到在线的时间；离线时保留原值
+  updatedAt     DateTime @updatedAt
+}
+
+// 日活订阅（UTC 日，每 10min 滚动 UPSERT）
+model DailyActiveSubscription {
+  id          Int      @id @default(autoincrement())
+  day         DateTime // UTC 00:00
+  activeCount Int      // 当日有流量增量的 subscriptionId 去重数
+  totalCount  Int      // 当日末时刻 activated=true 且 !isAdmin
+  newCount    Int      // 当日新增订阅
+  updatedAt   DateTime @updatedAt
+
+  @@unique([day])
+  @@index([day])
+}
+
+// 收入日聚合（UTC 日，每 10min 滚动 UPSERT；口径见 plan §3.1）
+model DailyRevenueSnapshot {
+  id           Int      @id @default(autoincrement())
+  day          DateTime // UTC 00:00
+  currency     String   @default("CNY")
+  orderCount   Int      // 只计正向销售订单数
+  grossAmount  BigInt   // 分：正向销售合计
+  refundAmount BigInt   @default(0) // 分：BALANCE_REFUND 取绝对值合计
+  netAmount    BigInt   // gross - refund
+  updatedAt    DateTime @updatedAt
+
+  @@unique([day, currency])
+  @@index([day])
+}
+
+// 流量日聚合（UTC 日，每 1h 滚动 UPSERT）
+// user_line_info 只有 traffic_inc + upload_speed/download_speed，无字节上下行区分
+model DailyTrafficSnapshot {
+  id                 Int      @id @default(autoincrement())
+  day                DateTime // UTC 00:00
+  totalByte          BigInt   // SUM(traffic_inc) 全站当日累计
+  peakUploadBps      BigInt?  // MAX(upload_speed)
+  peakDownloadBps    BigInt?  // MAX(download_speed)
+  avgUploadBps       BigInt?  // AVG(upload_speed)
+  avgDownloadBps     BigInt?  // AVG(download_speed)
+  updatedAt          DateTime @updatedAt
+
+  @@unique([day])
+  @@index([day])
+}
+
+// =========================================================================
+// ZFC schema release ledger
+// 由 install.sh 在 schema 迁移临界区维护；zf-web / zf-controler 启动时校验。
+// =========================================================================
+
+model ZfcSchemaState {
+  id                     Int      @id
+  status                 String
+  releaseVersion         String
+  schemaArtifactSha256   String
+  zfWebImageDigest       String?
+  zfControlerImageDigest String?
+  operationId            String?
+  appliedAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+}
+
+model ZfcSchemaHook {
+  id        String   @id
+  checksum  String
+  appliedAt DateTime @default(now())
+}
+
+// ===========================================================================
+// 订阅链接自动生成与管理（多平台订阅：Clash/Surge/Shadowrocket）
+// 命名：Subscription=账户(既有)；SubscriptionTemplate=配置模板；SubscriptionLink=订阅链接
+// ===========================================================================
+
+model SubscriptionTemplate {
+  id          Int      @id @default(autoincrement())
+  ownerId     Int?     // → Subscription.id；null = 内置/系统
+  owner       Subscription? @relation("SubTemplateOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  name        String   @unique  // 系统生成稳定唯一键（builtin:standard-routing / {ownerId}:{slug}）
+  displayName String            // 用户可见名
+  isBuiltin   Boolean  @default(false) // 系统种子模板（克隆即用）
+  isPublic    Boolean  @default(false) // 管理员公开给所有订阅用户
+  isEnabled   Boolean  @default(true)
+  configJson  String   @db.Text        // 序列化 SubTemplateConfig（5 大组件）
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  @@index([ownerId])
+  @@index([isPublic])
+}
+
+model SubscriptionLink {
+  id                    Int      @id @default(autoincrement())
+  ownerId               Int      // → Subscription.id（必填，账户级流量归属）
+  owner                 Subscription @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  name                  String
+  tokenHash             String   @unique   // 生产 token SHA-256（校验用；查找仍走 hash）
+  tokenPlain            String?            // 明文生产 token 冗余存储，用于「随时查看链接/二维码」按需回显；
+                                            // 本功能上线前创建的链接此列为 null，需重置一次 Token 才能启用。
+                                            // 有意降低的安全边界——已有「重置 Token」兜底，产品侧已确认可接受。
+  previousTokenHash     String?            // 仅在途请求宽限；默认 rotate 即刻失效(grace=0 不写)
+  previousTokenExpireAt DateTime?          // 旧 token 宽限到期；查找仅当 now<此值才接受 previous
+  previewTokenHash      String?  @unique   // 独立调试/预览 token（可单独重置）
+  previewExpireAt       DateTime?          // 预览 token 可选短 TTL（null=不过期）
+  snapshotJson          String   @db.Text  // 冻结的 SubTemplateConfig，与源模板脱钩
+  sourceTemplateId      Int?               // 仅溯源（克隆自哪个模板），不参与规则解析
+  allowedFormats        String[]           // 限定可导出格式；空=全部(clash/surge/shadowrocket)
+  isEnabled             Boolean  @default(true)
+  fetchCount            Int      @default(0)   // 生产拉取审计计数（预览不计）
+  lastFetchedAt         DateTime?
+  lastFetchIp           String?
+  lastFetchUa           String?
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+  fetchLogs             SubLinkFetchLog[]
+  @@index([ownerId])
+  @@index([sourceTemplateId])
+}
+
+/// 订阅链接拉取审计事件（G1）：60s 固定桶原子 upsert，双上限清理（90 天 + 每 link 2000 条）。
+model SubLinkFetchLog {
+  id          Int              @id @default(autoincrement())
+  linkId      Int
+  link        SubscriptionLink @relation(fields: [linkId], references: [id], onDelete: Cascade)
+  ownerId     Int
+  owner       Subscription     @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  windowStart DateTime
+  fetchedAt   DateTime
+  ip          String
+  userAgent   String
+  uaHash      String
+  tokenKind   Int              // 0=当前生产 1=宽限旧token 2=预览
+  fetchCount  Int              @default(1)
+  geo         String?
+  @@unique([linkId, ip, uaHash, tokenKind, windowStart])
+  @@index([linkId, fetchedAt])
+  @@index([ownerId, fetchedAt])
+  @@index([fetchedAt], map: "sub_link_fetch_log_fetched_idx") // cleanup scan only
+}
+
+// G2 账户级踢 IP：canonical 前缀键（v4 /32；v6 /64|/128），upsert 按 (subscriptionId, ipPrefix)。
+// 活跃条件：revokedAt IS NULL AND expiresAt > DB now()。
+model KickedIp {
+  id               Int          @id @default(autoincrement())
+  subscriptionId   Int
+  subscription     Subscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+  ipPrefix         String       // canonical：v4 /32；v6 /64|/128
+  createdAt        DateTime     @default(now())
+  lastKickedAt     DateTime     @default(now()) // re-kick 更新；UI 历史语义用此
+  expiresAt        DateTime     // clamp ≤ now+30d（DB 时间）
+  reason           String?      // 长度上限（如 ≤200 字符）
+  createdByTokenId String?      // 操作者 token_id（对齐 audit_log_service 先例）
+  revokedAt        DateTime?
+  @@unique([subscriptionId, ipPrefix])
+  @@index([subscriptionId, expiresAt])
+}
+
+// ========== 多租户（Multi-Tenant，license feature） ==========
+// 面板内多租户：租户是能正常运营面板的实体（管自己的服务器/转发端点/用户/套餐）。
+// 注意与跨面板共享的"面板B租户"（ServerShare/ImportedServerShare）是两个概念，互不相干。
+// 一租户一管理账号：Subscription.isTenantAdmin 只在"创建租户"事务中置 true，全库无其他写点。
+// Tenant 无出边 FK（面板迁移拓扑排序不成环）；所有归属列均为可空单向 FK 指向本表。
+
+enum TenantStatus {
+  ACTIVE
+  SUSPENDED
+}
+
+model Tenant {
+  id          Int          @id @default(autoincrement())
+  name        String       @unique          // 租户名（展示用）
+  status      TenantStatus @default(ACTIVE)
+  note        String       @default("")     // 超管备注
+
+  // 配额（null = 不限）
+  maxServers  Int?
+  maxUsers    Int?                           // 只计终端用户，不含租户管理员自身
+  maxPorts    Int?
+  // 五域租户化新增配额（null=不限，照抄 maxServers 形态；tenant-admin-domain-expansion §4.3）
+  maxWgNetworks         Int?
+  maxNatTraversals      Int?
+  maxForwardChains      Int?
+  maxUnlockServices     Int?
+  maxMatchRules         Int?
+  maxTrafficRules       Int?
+  maxTrafficRuleSets    Int?
+  maxOutboundSelectors  Int?
+  maxFirewallRules      Int?
+  maxFirewallRuleSets   Int?
+  /// 是否允许租户管理员分发（建订阅账户/套餐/兑换码）。默认关，超管显式开启。
+  allowDistribution Boolean @default(false)
+
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  subscriptions     Subscription[]
+  outboundEndpoints OutboundEndpoint[]
+  forwardEndpoints  ForwardEndpoint[]
+  importedServerShares ImportedServerShare[]
+  packages          Package[]
+  orders            Order[]
+  redeemCodes       RedeemCode[]
+  announcements     Announcement[]
+  serverGroups      ServerGroup[]
+  forwarderGroups   ForwarderEndpointGroup[]
+  // 五域租户化：十张新资源表反向关系（onDelete Restrict 在资源侧）
+  forwardChains            ForwardChain[]
+  natTraversals            NatTraversal[]
+  wgNetworks               WgNetwork[]
+  trafficMatchRules        TrafficMatchRule[]
+  trafficOutboundSelectors TrafficOutboundSelector[]
+  trafficRules             TrafficRule[]
+  trafficRuleSets          TrafficRuleSet[]
+  firewallRules            FirewallRule[]
+  firewallRuleSets         FirewallRuleSet[]
+  unlockServiceConfigs     UnlockServiceConfig[]
+  notificationPolicies     TenantNotificationPolicy[]
+
+  @@index([status])
+}
+
+// per-tenant 通知策略（运维告警 + 生命周期）；tenant-admin-domain-expansion §4.4
+enum NotificationPolicySource {
+  Lifecycle   // NotificationKind:发给事件所属租户用户
+  OpsAlert    // AlertReason:推给租户管理员
+}
+
+model TenantNotificationPolicy {
+  id        Int      @id @default(autoincrement())
+  tenantId  Int
+  tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  source    NotificationPolicySource
+  kind      Int      // source=Lifecycle → NotificationKind 整数映射
+                     // source=OpsAlert  → AlertReason 整数映射
+  enabled   Boolean
+  channels  Int      // bitflags EMAIL=1 | TELEGRAM=2（与 NotificationSetting 同义）
+  thresholds String? // JSON，按 kind 解释
+  updatedAt DateTime @updatedAt
+
+  @@unique([tenantId, source, kind])
+  @@index([tenantId])
+}
+
+// ---------------------------------------------------------------------------
+// DDNS (S3a) — claim 层 + 绑定；见 docs/design/dynamic-ingress-notify-and-ddns.md §5.2.2
+// ---------------------------------------------------------------------------
+
+enum DdnsFamilyFilter {
+  V4Only
+  V6Only
+  Both
+}
+
+enum DdnsResourceType {
+  Server
+  ForwardEndpoint
+}
+
+enum DnsRecordKind {
+  A
+  AAAA
+}
+
+enum DnsClaimOwner {
+  Ddns
+  GroupAutoSwitch
+}
+
+enum DdnsErrorKind {
+  Config
+  Transient
+  RateLimited
+  Stale
+}
+
+model DdnsBinding {
+  id             Int              @id @default(autoincrement())
+  resourceType   DdnsResourceType
+  resourceId     Int
+  dnsApiConfigId Int
+  dnsApiConfig   DnsApiConfig     @relation(fields: [dnsApiConfigId], references: [id])
+  zoneId         String
+  recordName     String           // 用户原样输入
+  canonicalName  String           // 小写 + 去末尾点 + IDNA
+  family         DdnsFamilyFilter @default(Both)
+  ttl            Int              @default(60)
+  proxied        Boolean          @default(false)
+  enabled        Boolean          @default(true)
+  observeOnly    Boolean          @default(true)
+  description    String?
+  claims         DnsRecordClaim[]
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+
+  @@index([resourceType, resourceId])
+  @@index([enabled])
+}
+
+model DnsRecordClaim {
+  id                  Int            @id @default(autoincrement())
+  providerAuthority   String
+  zoneId              String
+  canonicalName       String
+  recordType          DnsRecordKind
+  owner               DnsClaimOwner
+  ddnsBindingId       Int?
+  ddnsBinding         DdnsBinding?   @relation(fields: [ddnsBindingId], references: [id], onDelete: Cascade)
+  serverGroupId       Int?
+  serverGroup         ServerGroup?   @relation(fields: [serverGroupId], references: [id], onDelete: Cascade)
+  dnsApiConfigId      Int
+  dnsApiConfig        DnsApiConfig   @relation(fields: [dnsApiConfigId], references: [id])
+
+  appliedFp           String?
+  providerRecordId    String?
+  lastAttemptAt       DateTime?
+  lastSuccessAt       DateTime?
+  lastError           String?
+  lastErrorKind       DdnsErrorKind?
+  consecutiveFailures Int            @default(0)
+  staleSince          DateTime?
+  removedRecordsJson  String?
+
+  createdAt           DateTime       @default(now())
+  updatedAt           DateTime       @updatedAt
+
+  @@unique([providerAuthority, zoneId, canonicalName, recordType])
+  @@index([ddnsBindingId])
+  @@index([serverGroupId])
+}
