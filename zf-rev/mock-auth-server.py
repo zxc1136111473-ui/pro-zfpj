@@ -1,219 +1,113 @@
 #!/usr/bin/env python3
-"""
-ZeroForwarder 自建授权服务器 (mock zf-license)
-=================================================
-已逆向出的真实授权协议(2026-10, v1.2.0):
+"""ZeroForwarder 自建授权服务器 (RS256 + entitlements 拉满)"""
+import base64, hashlib, http.server, json, os, struct, subprocess, sys, time
 
-[真实服务器行为]
-  GET  /public-key
-    -> {"success":true,"data":{"publicKey":"-----BEGIN PUBLIC KEY-----...-----END PUBLIC KEY-----","algorithm":"RS256"}}
-    算法 RS256,公钥 PEM。controler 以 TOFU 方式首次抓取后 pin 到磁盘,
-    或由 ZFC_AUTH_TRUSTED_PUBKEY_SHA256 / ZFC_AUTH_EMBED_PUBKEY_FILES 预置信任。
+PRIV = os.environ.get("MOCK_PRIV", "/keys/priv.pem")
+PUB  = os.environ.get("MOCK_PUB",  "/keys/pub.pem")
+INSTANCE_ID = os.environ.get("ZF_INSTANCE_ID", "")
 
-  POST /instance/{instance_id}/heartbeat
-    body: {"instance_id":"<uuid>"}
-    应返回带 token(JWT RS256, 用 /public-key 对应私钥签名)的 license 信息。
-    controler 会解析 token 并校验签名与 entitlements。
-
-  WebSocket /ws/instance/{instance_id}
-    controler 连上后发 AuthRequest, 期望收到带 token/entitlements 的消息。
-
-[本 mock 实现]
-  - 自带 RSA-2048 密钥对(首次运行自动生成到 ./mock_rsa_priv.pem / mock_rsa_pub.pem)
-  - 监听 0.0.0.0:9099, 提供 /public-key 与 /instance/{id}/heartbeat
-  - 签发 10 年期 active JWT, entitlements 拉满(max_workers=999, 全 feature on)
-  - 可选 --ws-port 提供基础 WebSocket 授权帧应答
-
-[用法]
-  python3 mock-auth-server.py [--port 9099] [--instance <uuid>]
-  # 部署时给 zf-controler 设:
-  #   ZFC_AUTH_SERVER_URL=http://<本机IP>:9099
-  #   ZFC_INSTANCE_ID=<uuid>
-  #   ZFC_API_KEY=<任意>
-  #   ZFC_AUTH_TRUSTED_PUBKEY_SHA256=<mock_rsa_pub.pem 的 sha256 指纹>  (推荐, 跳过 TOFU)
-"""
-import argparse
-import base64
-import hashlib
-import http.server
-import json
-import os
-import struct
-import subprocess
-import sys
-import threading
-import time
-
-HERE = os.path.dirname(os.path.abspath(__file__))
-PRIV = os.path.join(HERE, "mock_rsa_priv.pem")
-PUB = os.path.join(HERE, "mock_rsa_pub.pem")
-
-ENTITLEMENTS_FULL = {
-    "max_workers": 999,
-    "max_subscription_number": 99999,
-    "max_users_per_worker": 9999,
-    "feature_udp_forwarding_enabled": True,
-    "feature_autoip_enabled": True,
-    "feature_payment_enabled": True,
-    "feature_rbac_enabled": True,
-    "feature_multi_tenant_enabled": True,
-    "max_tenants": 999,
-    "monthly_rate": 0,
+ENT = {
+    "max_workers": 999, "max_subscription_number": 99999, "max_users_per_worker": 9999,
+    "feature_udp_forwarding_enabled": True, "feature_autoip_enabled": True,
+    "feature_payment_enabled": True, "feature_rbac_enabled": True,
+    "feature_multi_tenant_enabled": True, "max_tenants": 999, "monthly_rate": 0,
 }
 
+def b64u(b): return base64.urlsafe_b64encode(b).rstrip(b"=").decode()
 
-def b64url(d: bytes) -> str:
-    return base64.urlsafe_b64encode(d).rstrip(b"=").decode()
-
-
-def ensure_keys():
-    if not (os.path.exists(PRIV) and os.path.exists(PUB)):
-        subprocess.run(["openssl", "genrsa", "-out", PRIV, "2048"], check=True)
-        subprocess.run(["openssl", "rsa", "-in", PRIV, "-pubout", "-out", PUB], check=True)
-    with open(PUB) as f:
-        return f.read()
-
-
-def sign_rs256(signing_input: bytes) -> bytes:
-    return subprocess.run(
-        ["openssl", "dgst", "-sha256", "-sign", PRIV],
-        input=signing_input,
-        capture_output=True,
-        check=True,
-    ).stdout
-
-
-def make_jwt(instance_id: str, expires_days: int = 3650) -> str:
-    header = {"alg": "RS256", "typ": "JWT"}
+def make_jwt(iid):
+    h = b64u(json.dumps({"alg":"RS256","typ":"JWT"}, separators=(",",":")).encode())
     now = int(time.time())
-    payload = {
-        "sub": instance_id,
-        "iat": now,
-        "exp": now + 86400 * expires_days,
-        "mode": "active",
-        "entitlements": ENTITLEMENTS_FULL,
-    }
-    h = b64url(json.dumps(header, separators=(",", ":")).encode())
-    p = b64url(json.dumps(payload, separators=(",", ":")).encode())
-    sig = b64url(sign_rs256(f"{h}.{p}".encode()))
-    return f"{h}.{p}.{sig}"
+    p = b64u(json.dumps({"sub":iid,"sid":"mock-session-001","iat":now,"exp":now+86400*3650,"mode":"active",
+        "entitlements":ENT}, separators=(",",":")).encode())
+    sig = subprocess.run(["openssl","dgst","-sha256","-sign",PRIV],
+        input=f"{h}.{p}".encode(), capture_output=True).stdout
+    return f"{h}.{p}.{b64u(sig)}"
 
+def ws_accept(key):
+    return base64.b64encode(hashlib.sha1((key+"258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode()).digest()).decode()
 
-def ws_accept(key: str) -> str:
-    return base64.b64encode(
-        hashlib.sha1((key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode()).digest()
-    ).decode()
+def ws_frame(p):
+    ln = len(p)
+    head = bytes([0x81, ln]) if ln < 126 else bytes([0x81,126]) + struct.pack(">H", ln)
+    return head + p
 
-
-def ws_frame(payload: bytes) -> bytes:
-    ln = len(payload)
-    if ln < 126:
-        head = bytes([0x81, ln])
-    elif ln < 65536:
-        head = bytes([0x81, 126]) + struct.pack(">H", ln)
-    else:
-        head = bytes([0x81, 127]) + struct.pack(">Q", ln)
-    return head + payload
-
-
-class Handler(http.server.BaseHTTPRequestHandler):
+class H(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
-
-    def log_message(self, *a):
-        pass
-
-    def _json(self, code: int, obj: dict):
-        body = json.dumps(obj).encode()
-        self.send_response(code)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-
-    # ---- GET ----
+    def log_message(self, *a): pass
+    def _j(self, code, obj):
+        import sys
+        print(f"[MOCK] {self.command} {self.path}", flush=True)
+        b = json.dumps(obj).encode()
+        self.send_response(code); self.send_header("Content-Type","application/json")
+        self.send_header("Content-Length", str(len(b))); self.end_headers(); self.wfile.write(b)
     def do_GET(self):
-        up = self.headers.get("Upgrade", "").lower()
-        if "websocket" in up:
-            return self._ws_upgrade()
-        if self.path == "/public-key":
-            pub_pem = ensure_keys()
-            return self._json(200, {
-                "success": True,
-                "data": {"publicKey": pub_pem, "algorithm": "RS256"},
-            })
-        self._json(404, {"success": False, "error": "not_found"})
-
-    def _ws_upgrade(self):
-        key = self.headers.get("Sec-WebSocket-Key", "")
-        self.send_response(101)
-        self.send_header("Upgrade", "websocket")
-        self.send_header("Connection", "Upgrade")
-        self.send_header("Sec-WebSocket-Accept", ws_accept(key))
-        self.end_headers()
-        try:
-            # 收 AuthRequest(简单读取一帧即可)
-            conn = self.connection
-            conn.settimeout(3)
+        print(f"[MOCK-GET] {self.path}", flush=True)
+        if "websocket" in self.headers.get("Upgrade","").lower():
+            key = self.headers.get("Sec-WebSocket-Key","")
+            self.send_response(101)
+            self.send_header("Upgrade","websocket"); self.send_header("Connection","Upgrade")
+            self.send_header("Sec-WebSocket-Accept", ws_accept(key)); self.end_headers()
+            iid = self.path.rstrip("/").split("/")[-1] or INSTANCE_ID
+            msg = json.dumps({"token":make_jwt(iid),"status":"active","mode":"active",
+                "license":{"mode":"active","expires_at":"2036-01-01T00:00:00Z"},
+                "entitlements":ENT}).encode()
             try:
-                conn.recv(2)
-                ln = conn.recv(2)[1] & 0x7F
-                mask = conn.recv(4)
-                payload = b""
-                while len(payload) < ln:
-                    payload += conn.recv(ln - len(payload))
-                print("[WS] recv:", payload[:200], flush=True)
+                self.connection.settimeout(30)
+                # 持续读帧保持连接, 收到任何帧回 pong 保持活跃
+                end = time.time() + 300
+                while time.time() < end:
+                    try:
+                        self.connection.recv(4096)
+                    except Exception:
+                        pass
+                    # 周期发心跳帧
+                    if time.time() % 30 < 1:
+                        try:
+                            self.connection.sendall(ws_frame(msg))
+                        except Exception:
+                            break
+                    time.sleep(0.5)
             except Exception:
                 pass
-            # 应答:带 token 与 entitlements 的授权消息
-            iid = self.path.rstrip("/").split("/")[-1]
-            token = make_jwt(iid)
-            msg = {
-                "token": token,
-                "status": "active",
-                "mode": "active",
-                "license": {"mode": "active", "expires_at": "2036-01-01T00:00:00Z"},
-                "entitlements": ENTITLEMENTS_FULL,
-            }
-            conn.sendall(ws_frame(json.dumps(msg).encode()))
-            time.sleep(5)
-        except Exception as e:
-            print("[WS] error:", repr(e), flush=True)
-
-    # ---- POST ----
+            try: self.connection.close()
+            except Exception: pass
+            return
+        if self.path == "/public-key":
+            with open(PUB) as f: pem = f.read()
+            self._j(200, {"success":True,"data":{"publicKey":pem,"algorithm":"RS256"}})
+        elif "/worker-version" in self.path:
+            self._j(200, {"version":"1.2.0","controller_version":"1.2.0","arch":"x86_64","download_url":"","sha256":""})
+        elif "/forwarder-version" in self.path:
+            self._j(200, {"version":"1.2.0","controller_version":"1.2.0","arch":"x86_64","download_url":"","sha256":""})
+        else:
+            self._j(404, {"success":False,"error":"not_found"})
+    def do_GET_versions(self, kind):
+        # 给 controler 返回推荐 worker/forwarder 版本(避免 404 重试)
+        return {"success":True,"data":{"version":"1.2.0","download_url":"","recommended":True}}
     def do_POST(self):
-        ln = int(self.headers.get("Content-Length", 0) or 0)
+        ln = int(self.headers.get("Content-Length",0) or 0)
         body = self.rfile.read(ln) if ln else b""
-        print(f"[POST] {self.path} body={body[:200]!r}", flush=True)
         if self.path.startswith("/instance/") and self.path.endswith("/heartbeat"):
-            iid = self.path.split("/")[2]
-            token = make_jwt(iid)
-            return self._json(200, {
-                "success": True,
-                "data": {
-                    "status": "active",
-                    "token": token,
-                    "expires_at": "2036-01-01T00:00:00Z",
-                    "license": {"mode": "active", "expires_at": "2036-01-01T00:00:00Z"},
-                    "entitlements": ENTITLEMENTS_FULL,
-                },
-            })
-        self._json(200, {"success": True})
-
-
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--port", type=int, default=9099)
-    args = ap.parse_args()
-    pub_pem = ensure_keys()
-    digest = hashlib.sha256(pub_pem.encode()).hexdigest()
-    print(f"[*] mock auth server on 0.0.0.0:{args.port}")
-    print(f"[*] pubkey file : {PUB}")
-    print(f"[*] pubkey sha256: {digest}")
-    print("[*] controler 配置:")
-    print(f"    ZFC_AUTH_SERVER_URL=http://<host>:{args.port}")
-    print(f"    ZFC_AUTH_TRUSTED_PUBKEY_SHA256={digest}")
-    http.server.ThreadingHTTPServer(("0.0.0.0", args.port), Handler).serve_forever()
-
+            import os
+            iid = self.path.split("/")[2] or INSTANCE_ID
+            st = os.environ.get("STRUCT", "0")
+            tok = make_jwt(iid)
+            lic = {"mode":"active","expires_at":"2036-01-01T00:00:00Z"}
+            if st == "0":   b = {"success":True,"token":tok,"data":{"status":"active","token":tok,"access_token":tok,"jwt":tok,"license":lic,"entitlements":ENT,"expires_at":"2036-01-01T00:00:00Z"},"license":lic,"entitlements":ENT,"expires_at":"2036-01-01T00:00:00Z","status":"active"}
+            elif st == "1": b = {"success":True,"data":{"status":"active","access_token":tok,"license":lic,"entitlements":ENT}}
+            elif st == "2": b = {"success":True,"data":{"status":"active","jwt":tok,"license":lic,"entitlements":ENT}}
+            elif st == "3": b = {"success":True,"data":{"status":"active","token_value":tok,"license":lic,"entitlements":ENT}}
+            elif st == "4": b = {"success":True,"data":{"status":"active","token":{"jwt":tok,"expires_at":"2036-01-01T00:00:00Z"},"license":lic,"entitlements":ENT}}
+            elif st == "5": b = {"success":True,"data":tok}
+            elif st == "6": b = {"status":"active","token":tok,"license":lic,"entitlements":ENT,"success":True,"data":{"ok":1}}
+            self._j(200, b)
+        elif self.path.startswith("/instance/") and self.path.endswith("/status"):
+            self._j(200, {"success":True,"data":{"status":"active","instance_id":INSTANCE_ID}})
+        else:
+            self._j(200, {"success":True})
 
 if __name__ == "__main__":
-    main()
+    port = int(os.environ.get("MOCK_PORT","9099"))
+    print(f"[mock-auth] listening :{port}", flush=True)
+    http.server.ThreadingHTTPServer(("0.0.0.0", port), H).serve_forever()
