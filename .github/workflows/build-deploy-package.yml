@@ -21,11 +21,11 @@ jobs:
           PKG="zf-deploy-${GITHUB_REF_NAME#v}.tar.gz"
           # 打包一键部署 + 自建授权 + 文档(不含测试密钥/pro-ww.zip 附件)
           tar czf "$PKG" \
-            deploy/deploy-zf-oneclick.sh \
-            deploy/README-一键部署.md \
-            mock-auth-server.py \
-            REPORT-zeroforwarder-授权逆向.md \
-            授权协议笔记.md \
+            zf-rev/deploy/deploy-zf-oneclick.sh \
+            zf-rev/deploy/README-一键部署.md \
+            zf-rev/mock-auth-server.py \
+            zf-rev/REPORT-zeroforwarder-授权逆向.md \
+            zf-rev/授权协议笔记.md \
             README.md
           echo "PKG=$PKG" >> "$GITHUB_ENV"
           sha256sum "$PKG" > "$PKG.sha256"
@@ -51,4 +51,4 @@ jobs:
         run: |
           echo "### ✅ 构建完成" >> "$GITHUB_STEP_SUMMARY"
           echo "附件: $PKG (含 sha256 校验)" >> "$GITHUB_STEP_SUMMARY"
-          echo "真机用法: 解压后 sudo ./deploy/deploy-zf-oneclick.sh --web-domain <域> --controler-domain <域>" >> "$GITHUB_STEP_SUMMARY"
+          echo "真机用法: 解压后 sudo ./zf-rev/deploy/deploy-zf-oneclick.sh --web-domain <域> --controler-domain <域>" >> "$GITHUB_STEP_SUMMARY"
