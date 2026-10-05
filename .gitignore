@@ -1,0 +1,18 @@
+# 逆向分析产物忽略规则
+# 原始附件(37MB 离线安装包)——不入库, 真机部署用 install.sh 自动下载
+pro-ww.zip
+*.zip
+
+# mock 授权服务器运行时生成的测试密钥——不入库
+mock_rsa_priv.pem
+mock_rsa_pub.pem
+*.pem
+*.key
+
+# 本地临时/环境文件
+*.log
+.env
+docker-compose.yml
+.admin_token
+.DS_Store
+__pycache__/
