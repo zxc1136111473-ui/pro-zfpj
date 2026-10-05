@@ -18,7 +18,8 @@
 #      --mock-port <port>         mock 授权服务器端口(默认 9099)
 #      --install-dir <dir>        安装目录(默认 /opt/zf)
 #      --caddy-email <email>      可选, 启用 Caddy 时用于 Let's Encrypt
-#      --no-verify                跳过结尾 license 验证
+#      --disable-tdengine         禁用 TDengine(时序统计), 生产机内存紧张时推荐
+      --no-verify                跳过结尾 license 验证
 #      -y                          全默认直接跑(仍需 --web-domain/--controler-domain)
 #
 # 输出:
@@ -38,6 +39,7 @@ API_KEY=""
 MOCK_PORT=9099
 INSTALL_DIR="/opt/zf"
 CADDY_EMAIL=""
+DISABLE_TDENGINE=0
 VERIFY=1
 YES=0
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -59,6 +61,7 @@ while [[ $# -gt 0 ]]; do
     --install-dir)      INSTALL_DIR="$2"; shift 2 ;;
     --caddy-email)      CADDY_EMAIL="$2"; shift 2 ;;
     --no-verify)        VERIFY=0; shift ;;
+    --disable-tdengine) DISABLE_TDENGINE=1; shift ;;
     -y)                 YES=1; shift ;;
     *) die "未知参数: $1" ;;
   esac
@@ -246,6 +249,7 @@ ZFC_VALIDATE_LICENSE=0
 ZFC_AUTO_INSTALL_DOCKER=1
 ZFC_UPDATE_CHANNEL=latest
 EOF
+[[ "$DISABLE_TDENGINE" == "1" ]] && echo "DISABLE_TDENGINE=true" >> "$INSTALL_DIR/zfc.env"
 [[ -n "$CADDY_EMAIL" ]] && echo "CADDY_EMAIL=$CADDY_EMAIL" >> "$INSTALL_DIR/zfc.env"
 
 log "运行官方安装(可能耗时 5-10 分钟, 请耐心)…"
