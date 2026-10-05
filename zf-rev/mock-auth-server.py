@@ -76,10 +76,17 @@ class H(http.server.BaseHTTPRequestHandler):
         if self.path == "/public-key":
             with open(PUB) as f: pem = f.read()
             self._j(200, {"success":True,"data":{"publicKey":pem,"algorithm":"RS256"}})
+        elif self.path.endswith("/status"):
+            self._j(200, {"success":True,"data":{"status":"active","mode":"active","instance_id":INSTANCE_ID,"version":"1.2.0"}})
+        elif "/download-forwarder" in self.path:
+            # 返回 forwarder 二进制下载元数据(版本 1.2.0, 无实际内容, 让端点保持本地二进制)
+            self._j(200, {"success":True,"data":{"version":"1.2.0","arch":"x86_64","controller_version":"1.2.0","download_url":"","sha256":"","size":0,"total_size":0,"chunk_size":0,"decoded_size":0,"chunk_index":0,"is_last":True}})
+        elif "/download-worker" in self.path:
+            self._j(200, {"success":True,"data":{"version":"1.2.0","arch":"x86_64","controller_version":"1.2.0","download_url":"","sha256":"","size":0,"total_size":0,"chunk_size":0,"decoded_size":0,"chunk_index":0,"is_last":True}})
         elif "/worker-version" in self.path:
-            self._j(200, {"version":"1.2.0","controller_version":"1.2.0","arch":"x86_64","download_url":"","sha256":""})
+            self._j(200, {"success":True,"data":{"version":"1.2.0","controller_version":"1.2.0","arch":"x86_64","download_url":"","sha256":"","total_size":0,"chunk_size":1048576,"decoded_size":0,"chunk_index":0,"is_last":True,"version_info":{"version":"1.2.0","arch":"x86_64","sha256":""}}})
         elif "/forwarder-version" in self.path:
-            self._j(200, {"version":"1.2.0","controller_version":"1.2.0","arch":"x86_64","download_url":"","sha256":""})
+            self._j(200, {"success":True,"data":{"version":"1.2.0","controller_version":"1.2.0","arch":"x86_64","download_url":"","sha256":"","total_size":0,"chunk_size":1048576,"decoded_size":0,"chunk_index":0,"is_last":True,"version_info":{"version":"1.2.0","arch":"x86_64","sha256":""}}})
         else:
             self._j(404, {"success":False,"error":"not_found"})
     def do_GET_versions(self, kind):
